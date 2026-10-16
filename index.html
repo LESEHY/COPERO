@@ -174,6 +174,8 @@ table.tb{border-collapse:collapse;width:100%;min-width:560px;font-size:13px}
 .addc{display:flex;gap:8px}
 .addc input{flex:1;min-width:0;min-height:44px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--surface)}
 .err{color:var(--bad);font-size:13px}
+.fld input.bad{border-color:var(--bad);box-shadow:0 0 0 1px var(--bad)}
+.aggbox{padding:10px 12px;border:1px dashed var(--line);border-radius:12px;margin:10px 0}
 .hint{font-size:12px;color:var(--muted)}
 .note{font-size:12px;color:var(--warn);background:var(--warn-soft);border-radius:10px;padding:8px 10px}
 .natbtn{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:46px;width:100%;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--surface);text-align:left}
@@ -279,6 +281,10 @@ body{word-break:keep-all;overflow-wrap:break-word}
   .nav{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--surface);border-top:1px solid var(--line);padding:6px max(10px,env(safe-area-inset-left,0px)) calc(6px + env(safe-area-inset-bottom,0px));gap:6px}
   .nav .tab{flex:1;padding:0 6px;border-radius:12px}
   #toast{bottom:calc(84px + env(safe-area-inset-bottom,0px))}
+  /* 선수 등록 화면: 메인 메뉴(검색/비교/등록)는 위로, 섹션 탭(선수 정보/클럽/국가대표/메모)은 아래 엄지 영역으로 — 오클릭 방지 */
+  body.inreg .nav{position:static;width:100%;background:none;border:0;padding:0;order:3}
+  body.inreg .rtabs{position:fixed;left:0;right:0;bottom:0;top:auto;z-index:40;background:var(--surface);border-top:1px solid var(--line);padding:6px max(10px,env(safe-area-inset-left,0px)) calc(6px + env(safe-area-inset-bottom,0px));margin:0}
+  body.inreg .rtabs .tab{min-height:48px}
   .fld input,.fld select,.fld textarea,.natbox input,.search input,.addc input,select{font-size:16px}
   .hero h1{font-size:22px}
   .n4{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -635,11 +641,18 @@ const YC=[.09,.10,.10,.16,.22,.16,.19,.04];
 const AGE_DROP={16:16,17:13,18:10,19:8,20:6,21:4.5,22:3,23:2,24:1,31:1,32:2,33:3,34:4.5,35:6,36:8,37:10};
 const dropAt=a=>a<=16?16:a>=38?12:(AGE_DROP[a]||0);
 
-function distribute(w,total,cap){
-  const n=w.length;let sw=w.reduce((a,b)=>a+b,0);if(sw<=0){w=w.map(()=>1);sw=n}
-  let out=w.map(x=>Math.min(cap,Math.floor(total*x/sw)));let rem=total-out.reduce((a,b)=>a+b,0),guard=0;
-  while(rem>0&&guard++<20000){let best=-Infinity,bi=-1;for(let i=0;i<n;i++){if(out[i]<cap){const fr=total*w[i]/sw-out[i];if(fr>best){best=fr;bi=i}}}if(bi<0)break;out[bi]++;rem--}
-  return out;
+/* 합계를 가중치 비율로 나눈다. caps: 숫자 또는 행별 배열, min1: 합계가 충분하면 모든 행에 최소 1 배정 */
+function distribute(w,total,caps,min1){
+  const n=w.length;if(!n)return [];
+  const cp=Array.isArray(caps)?caps.slice():w.map(()=>caps==null?1e9:caps);
+  let base=w.map(()=>0),rest=total;
+  if(min1&&total>=n){base=cp.map(c=>c>=1?1:0);rest=total-base.reduce((a,b)=>a+b,0)}
+  const room=cp.map((c,i)=>c-base[i]);
+  let ww=w.map(x=>Math.max(0,x)),sw=ww.reduce((a,b)=>a+b,0);if(sw<=0){ww=w.map(()=>1);sw=n}
+  const out=ww.map((x,i)=>Math.min(room[i],Math.floor(rest*x/sw)));
+  let rem=rest-out.reduce((a,b)=>a+b,0),guard=0;
+  while(rem>0&&guard++<200000){let best=-Infinity,bi=-1;for(let i=0;i<n;i++){if(out[i]<room[i]){const fr=rest*ww[i]/sw-out[i];if(fr>best){best=fr;bi=i}}}if(bi<0)break;out[bi]++;rem--}
+  return out.map((x,i)=>x+base[i]);
 }
 /* 경기수 분포: 25~55 중심, 16~21세는 0~24 확률 높음, 56~70은 드물게 */
 function pickGames(r,age,q,cap,pw){
@@ -657,13 +670,19 @@ function honors(s){
   (s.tr||[]).forEach(t=>{if(TR_REC.indexOf(t)<0)h+=.04});
   return Math.min(h,.25);
 }
-function autoGen(d,overwrite){
+/* 국제대회 참가 시즌: 직접 지정했거나, 대표팀 대회 트로피가 있는 시즌 */
+const natIntl=s=>s.intl===true||(s.tr||[]).some(t=>TR_NAT.indexOf(t)>=0);
+const natCapOf=s=>natIntl(s)?20:10;
+const SKEYS=['gl','as','rt','min','kp','yc','rd','pg','sh','sot','pp','lp','bc','cr','dr','du','ad','tc','tb','dl','fw','tk','ic','bs','fc','rc','pw','db','cl','cs','ga'];
+/* scope: 'club' = 클럽 시즌만, 'nat' = 국가대표 시즌만. 반환: {n,err} (err가 있으면 아무것도 쓰지 않음) */
+function autoGen(d,overwrite,scope){
+  scope=scope==='nat'?'nat':'club';
   carryAll(d.careers);
   const gk=d.pos==='GK',pi=PI[d.pos]==null?3:PI[d.pos];
   const club=d.careers.filter(c=>c.kind!=='nat'),nat=d.careers.filter(c=>c.kind==='nat');
   const known=[];d.careers.forEach(c=>c.seasons.forEach(s=>{if(has(s.ovr))known.push(num(s.ovr))}));
   const peak=known.length?Math.max.apply(null,known):(num(d.ovr0)||72);
-  const lvl=[];
+  const lvl=[],errs=[];
   /* OVR이 비어 있는 나이는 가장 가까운 입력값에서 나이 곡선으로 추정 */
   const kn=[];d.careers.forEach(c=>c.seasons.forEach(s=>{if(has(s.ovr))kn.push([num(s.a),num(s.ovr)])}));
   const guess=a=>{if(!kn.length)return clamp(peak-dropAt(a),45,99);let b=kn[0];kn.forEach(x=>{if(Math.abs(x[0]-a)<Math.abs(b[0]-a))b=x});let v=b[1];if(a>b[0]){for(let x=b[0]+1;x<=a;x++)v+=AGE_OVR(x)}else{for(let x=a+1;x<=b[0];x++)v-=AGE_OVR(x)}return clamp(v,45,99)};
@@ -675,13 +694,18 @@ function autoGen(d,overwrite){
       const rt0=has(s.rt)?num(s.rt):(num(c.agg.rt)||0),valE=has(s._v)?num(s._v):0;
       const qAbs=clamp((ovrE-60)/39,0,1),qRel=hiO>loO?clamp((ovrE-loO)/(hiO-loO),0,1):qAbs,qO=.5*qAbs+.5*qRel,qR=rt0?clamp((rt0-6.5)/3.3,0,1):qO,qV=valE?clamp(Math.log10(valE+1)/Math.log10(250),0,1):qO;
       const hon=honors(s);
-      const q=clamp(0.55*qO+0.2*qR+0.1*qV+0.15*(hon/0.25),0,1);
+      /* 시즌 폼(그 해의 컨디션): OVR과 무관하게 성적이 좋거나 나쁠 수 있다 */
+      const form=gauss(mulberry(hstr(d.name+'|form|'+c.club+'|'+a+'|'+S.genSeed)))*.16;
+      const q=clamp(clamp(0.55*qO+0.2*qR+0.1*qV+0.15*(hon/0.25),0,1)+form,0,1);
       return{s:s,a:a,q:q,ovrE:ovrE,rng:mulberry(hstr(d.name+'|'+c.club+'|'+a+'|'+(overwrite?'o':'f')+'|'+S.genSeed)),nat:isNat,c:c};
     });
-    lvl.push({c:c,rows:rows,nat:isNat});
+    const L={c:c,rows:rows,nat:isNat,T:{},label:isNat?'국가대표':c.club};
+    const ag=c.agg||{};['g','gl','as','cs','ga','rt'].forEach(k=>{if(num(ag[k])>0&&!(gk&&(k==='gl'||k==='as')))L.T[k]=num(ag[k])});
+    lvl.push(L);
   };
   club.forEach(c=>prep(c,false));nat.forEach(c=>prep(c,true));
-  /* 전성기 판단: 가장 높은 종합 수준(OVR·평점·몸값·수상)의 나이 → 현실적인 전성기 범위(24~29.5)로 보정 */
+  const act=lvl.filter(L=>L.nat===(scope==='nat'));
+  /* 전성기 판단 */
   const crow=[];lvl.forEach(L=>{if(!L.nat)L.rows.forEach(r=>crow.push(r))});
   let pc=26.5,peakRow=null;
   if(crow.length>=3){
@@ -691,55 +715,82 @@ function autoGen(d,overwrite){
   }
   crow.forEach(r=>{r.pw=r.s.inj?0:Math.exp(-Math.pow((r.a-pc)/3.0,2)/2)});
   let made=0;
-  const canW=(s,k)=>!has(s[k])||(overwrite&&isAuto(s,k));
-  const wr=(s,k,v)=>{if(canW(s,k)){s[k]=String(v);markAuto(s,k);return true}return false};
-  /* 1) 경기수 */
-  lvl.forEach(L=>{
-    const cap=L.nat?20:70;
+  /* 쓰기 가능: 빈 칸, 또는 자동 생성된 칸(다시 설정 · 경기수를 다시 만든 시즌 · 합계가 지정된 항목) */
+  const canW=(s,k)=>!has(s[k])||(isAuto(s,k)&&(overwrite||s._rg));
+  const cw=(L,s,k)=>!has(s[k])||(isAuto(s,k)&&(overwrite||s._rg||L.T[k]>0));
+  const wr=(L,s,k,v)=>{if(cw(L,s,k)){s[k]=String(v);markAuto(s,k);return true}return false};
+  const userCell=(s,k)=>has(s[k])&&!isAuto(s,k);
+  /* 0) 국가대표: 국제대회 시즌 판정 (직접 지정 > 대표팀 트로피 > 2년 주기 자동 배정) */
+  act.forEach(L=>{
+    if(!L.nat)return;
+    const first=L.rows.length?L.rows[0].a:0,ph=hstr(d.name+'|ph')%2;
     L.rows.forEach(r=>{
-      r.lock=!canW(r.s,'g');
-      r.g=r.lock?num(r.s.g):(L.nat?clamp(Math.round((r.a<20?2:r.a>35?4:5)+r.q*9+gauss(r.rng)*2.2),0,cap):pickGames(r.rng,r.a,r.q,cap,r.pw==null?0.5:r.pw));
-      if(r.s.inj&&!r.lock)r.g=Math.max(1,Math.round(r.g*(.2+.3*r.rng())));
+      const s=r.s,userDec=s.intl!==undefined&&!isAuto(s,'intl'),tro=(s.tr||[]).some(t=>TR_NAT.indexOf(t)>=0);
+      r.intlAuto=!userDec&&!tro;
+      r.intl=userDec?s.intl===true:(tro||((r.a-first+ph)%2===0));
     });
   });
-  /* 2) 기존 합계(시트 값)가 있으면 합계에 맞춰 연도별로 나눔 */
-  lvl.forEach(L=>{
-    const cap=L.nat?20:70,free=L.rows.filter(r=>!r.lock);
-    const agg=L.c.agg||{},hasStats=L.c.seasons.some(s=>SUMK.some(k=>has(s[k]))),hasUser=L.c.seasons.some(s=>SUMK.some(k=>has(s[k])&&!isAuto(s,k)));
-    L.useAgg=free.length>0&&free.length===L.rows.length&&num(agg.g)>0&&!hasUser&&(overwrite||!hasStats);
-    if(L.useAgg){const o=distribute(free.map(r=>Math.max(1,r.g)),num(agg.g),cap);free.forEach((r,i)=>{r.g=o[i]})}
+  /* 1) 경기수 */
+  act.forEach(L=>{
+    L.rows.forEach(r=>{
+      const s=r.s;
+      r.cap=L.nat?(r.intl?20:10):70;
+      r.lock=L.T.g?userCell(s,'g'):!canW(s,'g');
+      if(r.lock){r.g=num(s.g)}
+      else if(L.nat){
+        const f=r.a<20?.5:r.a>35?.6:1;
+        r.g=r.intl?clamp(Math.round((5+r.q*11+gauss(r.rng)*2.4)*f),1,20):clamp(Math.round((1+r.q*7+gauss(r.rng)*1.6)*f),0,10);
+      }else r.g=pickGames(r.rng,r.a,r.q,70,r.pw==null?0.5:r.pw);
+      if(s.inj&&!r.lock)r.g=Math.max(1,Math.round(r.g*(.2+.3*r.rng())));
+    });
   });
-  /* 3) 클럽: 시즌 56경기 이상이 선수 생활 중 1~3번 */
-  const cr=[];lvl.forEach(L=>{if(!L.nat)L.rows.forEach(r=>cr.push(r))});
-  const hi=()=>cr.filter(r=>r.g>=56);
-  let guard=0;
-  while(hi().length>3&&guard++<50){
-    const cand=hi().filter(r=>!r.lock).sort((x,y)=>x.q*x.pw-y.q*y.pw)[0];if(!cand)break;
-    const old=cand.g;let rem=old-55;cand.g=55;
-    const rec=[];
-    cr.filter(r=>r.c===cand.c&&!r.lock&&r!==cand&&r.g<55).sort((x,y)=>x.g-y.g).forEach(r=>{if(rem>0){const t=Math.min(rem,55-r.g);r.g+=t;rem-=t;rec.push([r,t])}});
-    if(rem>0){rec.forEach(x=>{x[0].g-=x[1]});cand.g=old;break}
-  }
-  if(hi().length===0&&cr.length>=5){
-    const cands=cr.filter(r=>!r.lock&&r.a>=18&&r.a<=38&&r.g>0).sort((x,y)=>y.pw*(.5+y.q)-x.pw*(.5+x.q));
-    for(let i=0;i<cands.length;i++){
-      const cand=cands[i],need=56+Math.floor(hstr(d.name+cand.a)%5)-cand.g;
-      if(need<=0)break;
-      const L=lvl.find(l=>l.c===cand.c);
-      if(L.useAgg){const don=cr.filter(r=>r.c===cand.c&&!r.lock&&r!==cand&&r.g-need>=12).sort((x,y)=>y.g-x.g)[0];if(don){don.g-=need;cand.g+=need;break}}
-      else{cand.g+=need;break}
+  /* 2) 합계 경기수가 있으면 합계에 정확히 맞춰 나눔 (직접 입력한 경기수는 고정) */
+  act.forEach(L=>{
+    if(!L.T.g)return;
+    const free=L.rows.filter(r=>!r.lock),fix=L.rows.filter(r=>r.lock).reduce((t,r)=>t+r.g,0),R=L.T.g-fix;
+    if(R<0){errs.push(`${L.label}: 직접 입력한 경기수의 합(${fix})이 합계(${L.T.g})보다 큽니다.`);return}
+    if(!free.length){if(R!==0)errs.push(`${L.label}: 모든 시즌의 경기수가 직접 입력되어 있어 합계(${L.T.g})와 맞출 수 없습니다. (현재 ${fix}경기)`);return}
+    if(L.nat){let cap0=free.reduce((t,r)=>t+r.cap,0);const cand=free.filter(r=>r.intlAuto&&!r.intl).sort((x,y)=>y.q-x.q);while(cap0<R&&cand.length){const r=cand.shift();r.intl=true;r.cap=20;cap0+=10}}
+    const capS=free.reduce((t,r)=>t+r.cap,0);
+    if(R>capS){errs.push(`${L.label}: 합계 경기수(${L.T.g})를 시즌별 최대 경기수로는 나눌 수 없습니다. ${L.nat?'(국제대회 시즌 20경기, 그 외 10경기) 국제대회 시즌을 늘리거나 합계를 줄여 주세요.':'(1년 최대 70경기) 합계를 줄이거나 활동 기간을 늘려 주세요.'}`);return}
+    const o=distribute(free.map(r=>Math.max(1,r.g)),R,free.map(r=>r.cap),true);
+    free.forEach((r,i)=>{r.g=o[i]});
+  });
+  /* 3) 클럽: 시즌 56경기 이상이 선수 생활 중 1~3번 (합계가 허용하는 범위에서) */
+  if(scope==='club'){
+    const cr=[];act.forEach(L=>L.rows.forEach(r=>cr.push(r)));
+    const hi=()=>cr.filter(r=>r.g>=56);
+    let guard=0;
+    while(hi().length>3&&guard++<50){
+      const cand=hi().filter(r=>!r.lock).sort((x,y)=>x.q*x.pw-y.q*y.pw)[0];if(!cand)break;
+      const old=cand.g;let rem=old-55;cand.g=55;
+      const rec=[];
+      cr.filter(r=>r.c===cand.c&&!r.lock&&r!==cand&&r.g<55).sort((x,y)=>x.g-y.g).forEach(r=>{if(rem>0){const t=Math.min(rem,55-r.g);r.g+=t;rem-=t;rec.push([r,t])}});
+      if(rem>0){rec.forEach(x=>{x[0].g-=x[1]});cand.g=old;break}
+    }
+    if(hi().length===0&&cr.length>=5){
+      const cands=cr.filter(r=>!r.lock&&r.a>=18&&r.a<=38&&r.g>0).sort((x,y)=>y.pw*(.5+y.q)-x.pw*(.5+x.q));
+      for(let i=0;i<cands.length;i++){
+        const cand=cands[i],need=56+Math.floor(hstr(d.name+cand.a)%5)-cand.g;
+        if(need<=0)break;
+        const L=act.find(l=>l.c===cand.c);
+        if(L.T.g){const don=cr.filter(r=>r.c===cand.c&&!r.lock&&r!==cand&&r.g-need>=12).sort((x,y)=>y.g-x.g)[0];if(don){don.g-=need;cand.g+=need;break}}
+        else{cand.g+=need;break}
+      }
     }
   }
+  /* 경기수를 새로 정하는 시즌은 그 시즌의 자동 생성 스탯도 모두 다시 만든다 */
+  act.forEach(L=>L.rows.forEach(r=>{if(!r.lock)r.s._rg=true}));
   /* 4) 나머지 스탯 */
-  lvl.forEach(L=>{
+  act.forEach(L=>{
     const gen=[];
     L.rows.forEach(r=>{
       const s=r.s,g=r.g,rng=r.rng;
-      if(!r.lock)wr(s,'g',g);
-      if(g<=0){if(overwrite)['gl','as','rt','min','kp','yc','rd','pg','sh','sot','pp','lp','bc','cr','dr','du','ad','tc','tb','dl','fw','tk','ic','bs','fc','rc','pw','db','cl','cs','ga'].forEach(k=>{if(isAuto(s,k)){s[k]='';s.au=s.au.filter(x=>x!==k)}});return}
+      if(g<=0){r.clear=true;return}
       const mult=(k)=>{const e=RATE[k];return Math.max(.35,1+e[1]*(2*r.q-1))*e[0][pi]};
+      /* 출전 시간: 경기당 최소 1분, 평균 최대 90분 (연장전·추가시간을 감안해도 리그는 100분을 넘지 않음) */
       const mpg=gk?clamp(88+gauss(rng)*1.5,80,90):clamp((g>=30?70+18*r.q:g>=15?58+22*r.q:28+30*r.q)+gauss(rng)*3,12,90);
-      const mins=Math.round(g*mpg),nine=mins/90;
+      const mins=clamp(Math.round(g*mpg),g,Math.round(g*90)),nine=mins/90;
       const noise=()=>clamp(1+gauss(rng)*.10,.72,1.35);
       const v={};
       Object.keys(RATE).forEach(k=>{v[k]=Math.max(0,Math.round(nine*mult(k)*noise()))});
@@ -747,54 +798,79 @@ function autoGen(d,overwrite){
       if(!gk&&aw.indexOf('골든부츠')>=0)v.gl=Math.max(v.gl,Math.round(g*.85));
       if(!gk&&aw.indexOf('도움왕')>=0)v.as=Math.max(v.as,Math.round(g*.55));
       if(!gk&&aw.indexOf('발롱도르')>=0&&pi<=1)v.gl=Math.max(v.gl,Math.round(g*.7));
-      v.sh=Math.max(v.sh,Math.round(v.gl*1.6));
-      v.sot=clamp(Math.round(v.sh*(.32+.2*r.q+gauss(rng)*.03)),Math.min(v.gl,v.sh),v.sh);
-      v.pg=(pi<=3&&v.gl>=6)?Math.min(v.gl,Math.round(v.gl*(.03+rng()*.12))):0;
-      v.kp=Math.max(v.kp,Math.round(v.as*1.3));v.bc=clamp(v.bc,Math.round(v.as*.35),v.kp);
-      v.pp=Math.max(v.pp,v.lp*3);
+      v.gl=Math.min(v.gl,Math.ceil(g*1.6));v.as=Math.min(v.as,Math.ceil(g*1.2));
       const csr=(gk?.18+.30*r.q:.2+.25*r.q)*noise();
       v.cs=clamp(Math.round(g*(mpg/90)*csr),0,g);
       if(gk&&aw.indexOf('골든 글러브')>=0)v.cs=Math.max(v.cs,Math.round(g*.5));
       v.ga=Math.max(0,Math.round(nine*(gk?1.55-.85*r.q:1.45-.8*r.q)*noise()));
       v.yc=Math.round(g*YC[pi]*noise());v.rd=rng()<g*.006?1:0;v.min=mins;
       if(gk){v.gl=0;v.as=0}
-      /* 평점: 입력값/기존 합계 우선, 없으면 능력치 기반 */
-      if(canW(s,'rt')){
-        const base=num(L.c.agg.rt)>0?num(L.c.agg.rt)+gauss(rng)*.12:6.1+3.5*Math.pow(r.q,1.15);
-        v.rt=clamp(Math.round(base*10)/10,5.8,9.9);
-      }
+      v.rt=clamp(Math.round((6.1+3.5*Math.pow(r.q,1.15))*10)/10,5.8,9.9);
+      if(L.T.rt)v.rt=clamp(L.T.rt+gauss(rng)*.35+(r.q-.5)*.5,5.8,9.9);
       r.v=v;gen.push(r);
     });
-    /* 기존 합계에 맞춰 골·어시·클린시트·실점·평점 보정 */
-    if(L.useAgg&&gen.length){
-      const agg=L.c.agg;
-      (gk?['cs','ga']:['gl','as','cs','ga']).forEach(k=>{
-        const tot=num(agg[k]);if(tot<=0&&!gk&&(k==='cs'||k==='ga'))return;
-        const o=distribute(gen.map(r=>r.v[k]+0.01*r.g),tot,9999);
-        gen.forEach((r,i)=>{r.v[k]=o[i]});
-      });
-      gen.forEach(r=>{r.v.cs=Math.min(r.v.cs,r.g);r.v.sh=Math.max(r.v.sh,Math.round(r.v.gl*1.6));r.v.sot=clamp(r.v.sot,Math.min(r.v.gl,r.v.sh),r.v.sh);r.v.kp=Math.max(r.v.kp,Math.round(r.v.as*1.3));r.v.bc=Math.min(r.v.bc,r.v.kp)});
-      if(num(agg.rt)>0){
-        const m=gen.reduce((t,r)=>t+r.v.rt,0)/gen.length,sh=num(agg.rt)-m;
-        gen.forEach(r=>{r.v.rt=clamp(Math.round((r.v.rt+sh)*10)/10,5.8,9.9)});
-        let diff=Math.round(num(agg.rt)*10*gen.length)-Math.round(gen.reduce((t,r)=>t+r.v.rt*10,0)),gi=0;
-        while(diff!==0&&gi++<200){const r=gen[gi%gen.length],st=diff>0?1:-1,nv=Math.round(r.v.rt*10+st)/10;if(nv>=5.8&&nv<=9.9){r.v.rt=nv;diff-=st}}
+    /* 개인 최고 시즌: 합계가 지정되지 않은 항목만 최고 기록으로 보정 */
+    if(!L.nat&&peakRow&&gen.indexOf(peakRow)>=0){
+      const pr=peakRow,oth=L.rows.filter(r=>r!==pr),val=(r,k)=>r.v?r.v[k]:num(r.s[k]);
+      if(!gk&&!L.T.gl&&!L.T.as){const bo=Math.max.apply(null,oth.map(r=>val(r,'gl')+val(r,'as')).concat([0])),cur=pr.v.gl+pr.v.as;if(cur<=bo)pr.v.gl=Math.min(Math.ceil(pr.g*1.6),pr.v.gl+bo-cur+1)}
+      if(!L.T.rt){const br=Math.max.apply(null,oth.map(r=>val(r,'rt')).concat([0]));if(pr.v.rt<=br)pr.v.rt=Math.min(9.9,Math.round((br+.1)*10)/10)}
+      if(gk&&!L.T.cs){const bc=Math.max.apply(null,oth.map(r=>val(r,'cs')/Math.max(1,num(r.s.g)||r.g)).concat([0]));const g1=Math.max(1,pr.g);if(pr.v.cs/g1<=bc)pr.v.cs=Math.min(pr.g,Math.round((bc+.03)*g1))}
+    }
+    /* 합계에 정확히 맞춤: 직접 입력한 칸은 고정, 나머지 시즌이 (합계 − 고정 합)을 나눠 가짐 */
+    ['gl','as','cs','ga'].forEach(k=>{
+      const T=L.T[k];if(!T)return;
+      let F=0;const free=[];
+      L.rows.forEach(r=>{const s=r.s;if(userCell(s,k)){F+=num(s[k]);return}if(r.v)free.push(r)});
+      const R=T-F;
+      if(R<0){errs.push(`${L.label}: 직접 입력한 ${SL[k]}의 합(${F})이 합계(${T})보다 큽니다.`);return}
+      if(!free.length){if(R!==0)errs.push(`${L.label}: ${SL[k]}을(를) 나눌 시즌이 없습니다. 경기수가 있는 시즌이 필요합니다. (합계 ${T})`);return}
+      const capK=r=>k==='cs'?r.g:k==='ga'?r.g*4:k==='gl'?Math.ceil(r.g*1.6):Math.ceil(r.g*1.2);
+      const capS=free.reduce((t,r)=>t+capK(r),0);
+      if(R>capS){errs.push(`${L.label}: 합계 ${SL[k]}(${T})를 시즌별 경기수로는 나눌 수 없습니다. 경기수 합계를 늘리거나 ${SL[k]} 합계를 줄여 주세요.`);return}
+      const o=distribute(free.map(r=>r.v[k]+0.01*r.g+0.001),R,free.map(capK),false);
+      free.forEach((r,i)=>{r.v[k]=o[i]});
+    });
+    if(L.T.rt){
+      const T=L.T.rt,u=Math.abs(T*10-Math.round(T*10))<1e-9?0.1:0.01,inv=Math.round(1/u);
+      let nfix=0,Ff=0;const free=[];
+      L.rows.forEach(r=>{const s=r.s;if(userCell(s,'rt')&&num(s.rt)>0){nfix++;Ff+=Math.round(num(s.rt)*inv);return}if(r.v)free.push(r)});
+      const n=nfix+free.length;
+      if(n>0){
+        const tot=Math.round(T*n*inv),R=tot-Ff,lo=Math.round(5*inv),hi=Math.round(10*inv);
+        if(!free.length){if(R!==0)errs.push(`${L.label}: 평점 합계(${T})와 직접 입력한 평점이 맞지 않습니다.`)}
+        else if(R<free.length*lo||R>free.length*hi)errs.push(`${L.label}: 평점 ${T}에 맞게 시즌 평점을 나눌 수 없습니다. 직접 입력한 평점과 합계의 차이가 너무 큽니다.`);
+        else{
+          let vals=free.map(r=>clamp(Math.round(r.v.rt*inv),lo,hi));
+          const shift=(R-vals.reduce((a,b)=>a+b,0))/free.length;vals=vals.map(x=>clamp(Math.round(x+shift),lo,hi));
+          let diff=R-vals.reduce((a,b)=>a+b,0),gi=0;const ord=free.map((r,i)=>i).sort((a,b)=>free[b].g-free[a].g);
+          while(diff!==0&&gi++<200000){const i=ord[gi%ord.length],st=diff>0?1:-1,nv=vals[i]+st;if(nv>=lo&&nv<=hi){vals[i]=nv;diff-=st}}
+          free.forEach((r,i)=>{r.rtS=(vals[i]/inv).toFixed(u===0.1?1:2)});
+        }
       }
     }
-    if(!L.nat&&!L.useAgg&&peakRow&&gen.indexOf(peakRow)>=0){
-      const pr=peakRow,oth=L.rows.filter(r=>r!==pr),val=(r,k)=>r.v?r.v[k]:num(r.s[k]);
-      if(!gk){const bo=Math.max.apply(null,oth.map(r=>val(r,'gl')+val(r,'as')).concat([0])),cur=pr.v.gl+pr.v.as;if(cur<=bo)pr.v.gl+=bo-cur+1}
-      const br=Math.max.apply(null,oth.map(r=>val(r,'rt')).concat([0]));if(pr.v.rt<=br)pr.v.rt=Math.min(9.9,Math.round((br+.1)*10)/10);
-      if(gk){const bc=Math.max.apply(null,oth.map(r=>val(r,'cs')/Math.max(1,num(r.s.g)||r.g)).concat([0]));const g1=Math.max(1,pr.g);if(pr.v.cs/g1<=bc)pr.v.cs=Math.min(pr.g,Math.round((bc+.03)*g1))}
-    }
-    gen.forEach(r=>{
-      const s=r.s,v=r.v;
-      ['gl','as','rt','min','kp','yc','rd','pg','sh','sot','pp','lp','bc','cr','dr','du','ad','tc','tb','dl','fw','tk','ic','bs','fc','rc','pw','db','cl','cs','ga'].forEach(k=>{
-        wr(s,k,v[k])});
+    /* 합계 보정 후 세부 스탯의 앞뒤 관계 재정리 */
+    gen.forEach(r=>{const v=r.v;
+      v.cs=Math.min(v.cs,r.g);v.sh=Math.max(v.sh,Math.round(v.gl*1.6));v.sot=clamp(v.sot,Math.min(v.gl,v.sh),v.sh);
+      v.pg=(pi<=3&&v.gl>=6)?Math.min(v.gl,Math.round(v.gl*(.03+r.rng()*.12))):0;
+      v.kp=Math.max(v.kp,Math.round(v.as*1.3));v.bc=clamp(v.bc,Math.min(Math.round(v.as*.35),v.kp),v.kp);v.pp=Math.max(v.pp,v.lp*3);
+      if(r.rtS==null)v.rtS=v.rt.toFixed(1);else v.rtS=r.rtS;
+      if(gk){v.sh=0;v.sot=0;v.pg=0}
+    });
+  });
+  if(errs.length)return{n:0,err:errs[0]+(errs.length>1?` (외 ${errs.length-1}건)`:'')};
+  /* 5) 쓰기 */
+  act.forEach(L=>{
+    L.rows.forEach(r=>{
+      const s=r.s;
+      if(L.nat&&r.intlAuto){if(r.intl){s.intl=true;markAuto(s,'intl')}else{delete s.intl;s.au=(s.au||[]).filter(x=>x!=='intl')}}
+      if(!r.lock)wr(L,s,'g',r.g);
+      if(r.clear){SKEYS.forEach(k=>{if(isAuto(s,k)&&(overwrite||s._rg||L.T[k]>0)){s[k]='';s.au=(s.au||[]).filter(x=>x!==k)}});return}
+      SKEYS.forEach(k=>{wr(L,s,k,k==='rt'?r.v.rtS:r.v[k])});
       made++;
     });
   });
-  return made;
+  d.careers.forEach(c=>c.seasons.forEach(s=>{delete s._rg}));
+  return{n:made,err:''};
 }
 
 /* ---------- OVR · 몸값 자동 생성 ---------- */
@@ -846,20 +922,39 @@ function seasonScore(s,c,gkf,pi,grpName,dom){
   const aw=ws.length?Math.min(1,ws[0]+.15*(ws.slice(1).reduce((t,x)=>t+x,0))):0;
   return{stat:stat,tm:tm,aw:aw};
 }
+/* OVR → 그 OVR에서 기대되는 시즌 성적 점수(0~1). seasonScore의 분포(기존 선수 기준)와 맞춘 역변환표 */
+const O2S=[[55,0],[68,.1],[74,.2],[79,.3],[83,.4],[86,.5],[89,.6],[91,.7],[93,.8],[95,.9],[97,.96],[98,.985],[99,1]];
+const expScore=o=>lerpT(O2S,o);
+function seasonCtx(d){const m=new Map();d.careers.forEach(c=>{const co=(cfgIdx().lg2co||{})[c.league];c.seasons.forEach(s=>m.set(s,{c:c,dom:c.kind==='nat'?[]:(co?(TR_DOM[co.n]||[]):[])}))});return m}
+function natByAge(d){const m={};d.careers.forEach(c=>{if(c.kind==='nat')c.seasons.forEach(s=>{(m[s.a]=m[s.a]||[]).push(s)})});return m}
+/* 시즌 성과: 클럽 스탯 + 같은 나이 국가대표 스탯(경기수 가중) + 개인 수상 + 팀 우승 */
+function perfOf(d,s,ctx,nb){
+  const gkf=d.pos==='GK',pi=PI[d.pos]==null?3:PI[d.pos],gname=GRP[d.pos]||'MF',ci=ctx.get(s)||{c:null,dom:[]};
+  const sc=seasonScore(s,ci.c,gkf,pi,gname,ci.dom),parts=[];let aw=sc.aw,tm=sc.tm;
+  if(sc.stat!=null)parts.push([sc.stat,Math.max(1,num(s.g))]);
+  ((nb||{})[s.a]||[]).forEach(ns=>{const n=seasonScore(ns,null,gkf,pi,gname,[]);if(n.stat!=null)parts.push([n.stat,1.5*Math.max(1,num(ns.g))]);aw=Math.max(aw,n.aw);tm=Math.min(1,tm+n.tm)});
+  const w=parts.reduce((t,x)=>t+x[1],0);
+  return{stat:parts.length?parts.reduce((t,x)=>t+x[0]*x[1],0)/w:null,aw:aw,tm:tm};
+}
+/* 성과가 그 시즌 OVR에서 기대되는 수준보다 얼마나 좋았는가 (+이면 기대 이상) */
+function perfResid(p,o){const base=expScore(o),pf=p.stat==null?base:p.stat;return clamp(pf+.22*p.aw+.12*p.tm-base,-.6,.6)}
 /* ---------- 최대 OVR 기반 시즌별 OVR 곡선 ---------- */
 const PRIME_W=a=>a<=21?.12:a<=23?.9:a<=29?2:a===30?1:a<=32?.4:a===33?.15:.02;
 const DECL=a=>a<=27?.35:a<=29?.6:a<=31?.95:a<=33?1.4:a<=35?2.0:2.6;
-function ovTraj(d,seq,userO,M){
-  const n=seq.length,ages=seq.map(s=>num(s.a)),rnd=mulberry(hstr(d.name+'|ovt|'+GSEED()));
+function ovTraj(d,seq,userO,M,lo){
+  lo=lo||0;
+  const n=seq.length,ages=seq.map(s=>num(s.a)),rnd=mulberry(hstr(d.name+'|ovt|'+GSEED())),ctx=seasonCtx(d);
+  const topCap=Math.max(M-1,lo);
   const anch=[];seq.forEach((s,i)=>{if(userO.has(s))anch.push({i:i,o:num(s.ovr)})});
   if(!anch.length||anch[0].i!==0)return{err:'첫 시즌의 OVR이 필요합니다.'};
   let warn='';
   if(!anch.some(x=>x.o>=M)){
-    /* 앞뒤 입력값과 이어질 수 있는 시즌만 후보: 연 +4.5 이하 상승, 연 -3 이하 하락 */
+    /* 앞뒤 입력값과 이어질 수 있는 시즌만 후보: 연 +4.5 이하 상승, 연 -3 이하 하락. 개인 수상·우승이 많은 시즌일수록 최고 시즌이 될 가능성이 높다 */
     const feas=i=>{let pr=anch[0],nx=null;anch.forEach(x=>{if(x.i<i)pr=x;else if(x.i>i&&!nx)nx=x});
       const g=(M-pr.o)/Math.max(1,ages[i]-ages[pr.i]);if(g>4.5)return .002;
       if(nx&&(M-nx.o)/Math.max(1,ages[nx.i]-ages[i])>3)return .002;return 1};
-    const cand=[];for(let i=anch[0].i+1;i<n;i++)if(!userO.has(seq[i])&&!seq[i].inj)cand.push([i,PRIME_W(ages[i])*feas(i)]);
+    const hon=i=>{const ci=ctx.get(seq[i]),sc=seasonScore(seq[i],null,false,0,'MF',ci?ci.dom:[]);return Math.min(1,.6*sc.aw+.4*sc.tm)};
+    const cand=[];for(let i=anch[0].i+1;i<n;i++)if(!userO.has(seq[i])&&!seq[i].inj)cand.push([i,PRIME_W(ages[i])*feas(i)*(1+2.5*hon(i))]);
     if(!cand.length){for(let i=1;i<n;i++)if(!userO.has(seq[i]))cand.push([i,PRIME_W(ages[i])*feas(i)])}
     if(cand.length){
       const tot=cand.reduce((t,c)=>t+c[1],0);let u=rnd()*tot,pk=cand[cand.length-1][0];
@@ -878,75 +973,135 @@ function ovTraj(d,seq,userO,M){
       let o=A.o+dl*f+gauss(rnd)*(young?.9:.6);
       if(dl>=0){o=Math.max(prev,Math.round(o));if(rnd()<(young?.05:.1)&&o>prev)o=prev-1+Math.floor(rnd()*2)}
       else{o=Math.min(prev,Math.round(o));if(rnd()<.08)o=prev+1}
-      o=clamp(o,40,Math.max(B.o,A.o)+(dl>=0?0:1));
+      o=clamp(o,Math.max(40,lo),Math.max(B.o,A.o)+(dl>=0?0:1));
       if(dl>=0)o=Math.min(o,prev+(ages[i]<=19?6:5));
-      if(i!==pkI)o=Math.min(o,M-1);
+      if(i!==pkI)o=Math.min(o,topCap);
+      o=Math.max(o,lo);
       out[i]=o;prev=o;
     }
   }
   const L=anch[anch.length-1];let cur=L.o;
   for(let i=L.i+1;i<n;i++){
     cur=cur-Math.max(0,DECL(ages[i])+gauss(rnd)*.55);
-    out[i]=Math.min(Math.round(cur),M-1);if(out[i]<40)out[i]=40;
+    out[i]=Math.max(Math.min(Math.round(cur),topCap),Math.max(40,lo));
   }
   return{o:out,warn:warn};
 }
-/* 몸값: OVR·나이 기준표 × 직전 시즌 대비 변화 제한 (스탯이 있으면 시즌 퍼포먼스 반영) */
+/* 몸값: OVR·나이 기준표 × 직전 시즌 대비 변화 제한. 스탯(클럽+대표팀)·수상·우승 성과가 있으면 반영 */
 function valPass(d,seq,userV,final){
-  const gkf=d.pos==='GK',pi=PI[d.pos]==null?3:PI[d.pos],gname=GRP[d.pos]||'MF';
-  const cinfo=new Map();d.careers.forEach(c=>{const co=(cfgIdx().lg2co||{})[c.league];c.seasons.forEach(s=>cinfo.set(s,{c:c,dom:co?(TR_DOM[co.n]||[]):[]}))});
-  const S_=seq.map(s=>{if(!final)return null;const ci=cinfo.get(s),sc=seasonScore(s,ci.c,gkf,pi,gname,ci.dom);return sc.stat==null?null:.5*sc.stat+.25*sc.aw+.25*sc.tm});
+  const ctx=seasonCtx(d),nb=natByAge(d);
+  const P=seq.map(s=>final?perfOf(d,s,ctx,nb):null);
+  const S_=P.map(p=>p&&p.stat!=null?.5*p.stat+.25*p.aw+.25*p.tm:null);
   const ks=S_.filter(x=>x!=null),mean=ks.length?ks.reduce((a,b)=>a+b,0)/ks.length:null;
   let pv=Math.max(.1,num(seq[0].val));
   for(let i=1;i<seq.length;i++){
     const s=seq[i];
     if(userV.has(s)){pv=Math.max(.1,num(s.val));continue}
     let tv=lerpT(O2V,num(s.ovr))*ageVM(num(s.a));
-    if(final&&S_[i]!=null&&mean!=null)tv*=Math.exp(.7*clamp(S_[i]-mean,-.3,.3));
+    if(final&&P[i]){
+      let f=0;
+      if(S_[i]!=null&&mean!=null)f+=.5*clamp(S_[i]-mean,-.3,.3);
+      if(!s.inj)f+=.4*clamp(perfResid(P[i],num(s.ovr)),-.25,.3);
+      tv*=Math.exp(f);
+    }
     const v=clamp(clamp(tv,pv*.55,pv*2.3),.1,400);
     s.val=fmtVal(v);markAuto(s,'val');pv=num(s.val)||v;
   }
 }
-function ovvalPass(d,userO,userV,kind,M){
+/* 최종 OVR: 최대 OVR 시즌(1회)과 직접 입력값은 고정하고, 나머지는 '이전 시즌 성과'에 따라 오르내린다.
+   이전 시즌 성과가 OVR 기대치보다 크게 좋으면 크게 상승, 비슷하거나 조금 좋으면 소폭 상승, 조금 나쁘면 유지, 많이 나쁘면 하락.
+   최소~최대 OVR 범위를 벗어나지 않고, 이후 고정 시즌(최대 OVR 등)에 자연스럽게 이어질 수 있는 범위로 제한한다. */
+function ovrFinal(d,seq,fixed,M,lo){
+  const n=seq.length,ages=seq.map(s=>+s.a),ctx=seasonCtx(d),nb=natByAge(d);
+  const base=seq.map(s=>num(s.ovr)),fx=seq.map((s,i)=>fixed.has(s)||base[i]>=M);
+  /* 성과 잔차: 경기수가 적은 시즌은 신뢰도를 낮추고(표본 부족), 선수 본인의 평균 잔차로 일부 보정(생성 기준과 기대치의 편차 제거) */
+  const raw=seq.map((s,i)=>{if(s.inj)return null;const p=perfOf(d,s,ctx,nb),gg=num(s.g)+1.5*((nb[s.a]||[]).reduce((t,x)=>t+num(x.g),0));return perfResid(p,base[i])*Math.min(1,gg/22)});
+  const ok=raw.filter(x=>x!=null),mean=ok.length?ok.reduce((a,b)=>a+b,0)/ok.length:0;
+  const rs=raw.map(x=>x==null?0:x-.6*mean);
+  const out=base.slice(),G=a=>a<=19?6:5,Dn=3,topCap=Math.max(M-1,lo);
+  for(let i=1;i<n;i++){
+    if(fx[i])continue;
+    const prev=out[i-1],rp=rs[i-1],dB=base[i]-base[i-1],a=ages[i];
+    let step;
+    if(rp>=.24)step=Math.max(dB+2,3);                                  /* 이전 시즌 성과가 기대보다 크게 좋음 → 크게 상승 */
+    else if(rp>=.10)step=Math.max(dB+1,2);                             /* 좋음 → 상승 */
+    else if(rp>=-.06)step=a<=31?Math.max(dB,1):dB;                     /* 비슷하거나 조금 좋음 → 소폭 상승 */
+    else if(rp>=-.16)step=a<=21?Math.min(dB,1):(a<=33?0:dB);           /* 조금 나쁨 → 유지 */
+    else step=a<=21?Math.min(dB,0):Math.min(dB,-1)-(rp<-.30?1:0);      /* 많이 나쁨 → 하락 */
+    let v=clamp(prev+step,prev-4,prev+G(a)),lw=Math.max(lo,40),hi=topCap;
+    let nx=-1;for(let j=i+1;j<n;j++)if(fx[j]){nx=j;break}
+    /* 기본 곡선(나이·최대 OVR 시즌)에서 벗어날 수 있는 폭: 고정 시즌에 가까울수록 좁게 */
+    const dist=nx>=0?nx-i:9;
+    lw=Math.max(lw,base[i]-Math.min(3,dist));hi=Math.min(hi,base[i]+2);
+    if(nx>=0){const gap=ages[nx]-a;lw=Math.max(lw,out[nx]-G(a)*gap);hi=Math.min(hi,out[nx]+Dn*gap)}
+    if(lw>hi)lw=hi;
+    out[i]=clamp(Math.round(v),lw,hi);
+  }
+  seq.forEach((s,i)=>{if(!fixed.has(s)&&base[i]<M&&out[i]!==base[i]){s.ovr=String(out[i]);markAuto(s,'ovr')}});
+}
+function ovvalPass(d,userO,userV,kind,M,lo){
   const seq=clubSeq(d);
   if(kind==='prelim'){
-    const r=ovTraj(d,seq,userO,M);if(r.err)return r;
+    const r=ovTraj(d,seq,userO,M,lo);if(r.err)return r;
     seq.forEach((s,i)=>{if(!userO.has(s)&&r.o[i]!=null){
       /* 개인 수상·우승이 많은 시즌은 +1 (최대 OVR 미만) */
       const sc=seasonScore(s,null,false,0,'MF',[]);let o=r.o[i];
       if(sc.aw+sc.tm>=.7&&o<M-1&&o>=num(seq[0].ovr))o+=1;
-      s.ovr=String(o);markAuto(s,'ovr')}});
+      s.ovr=String(Math.max(o,lo||0));markAuto(s,'ovr')}});
     valPass(d,seq,userV,false);
     return r;
   }
+  if(kind==='ovr'){ovrFinal(d,seq,userO,M,lo||0);return{}}
   valPass(d,seq,userV,true);
   return{};
 }
-/* 한 번에: OVR·몸값(1차) → 스탯 → 몸값(스탯 반영). 직접 입력한 값은 그대로 유지 */
-function autoAll(d,mode){
+/* 자동 생성 한 번에. scope='club': 클럽 OVR · 몸값 · 스탯 (국가대표 값은 건드리지 않음, 대표팀 성적은 OVR 계산에 반영)
+   scope='nat': 국가대표 스탯만 (클럽 값은 건드리지 않음). 오류가 나면 아무 값도 바꾸지 않는다. 직접 입력한 값은 항상 유지 */
+function autoAll(d,mode,scope){
+  scope=scope==='nat'?'nat':'club';
+  const all=mode==='all',snap=JSON.parse(JSON.stringify(d.careers));
+  const fail=m=>{d.careers=snap;return{n:0,err:m}};
+  if(scope==='nat'){
+    if(!d.careers.some(c=>c.kind==='nat'&&c.seasons.length))return{n:0,err:'국가대표 나이별 칸이 없습니다. 입단 나이와 활동 기간을 먼저 입력하세요.'};
+    if(all)S.genSeed++;
+    carryAll(d.careers);
+    const g=autoGen(d,all,'nat');if(g.err)return fail(g.err);
+    carryAll(d.careers);
+    return{n:g.n,err:'',warn:''};
+  }
   const seq=clubSeq(d);
   if(!seq.length)return{n:0,err:'클럽 경력의 나이별 칸이 없습니다. 클럽을 선택하고 활동 기간을 입력하세요.'};
-  const f=seq[0],M=num(d.ovr0);
+  const f=seq[0],M=num(d.ovr0),lo=has(d.ovrMin)?num(d.ovrMin):0;
   if(!(M>0))return{n:0,err:'선수 정보의 ‘최대 OVR’을 먼저 입력하세요.'};
   if(M>99)return{n:0,err:'최대 OVR은 99 이하로 입력하세요.'};
+  if(lo>M)return{n:0,err:`최소 OVR(${lo})이 최대 OVR(${M})보다 높습니다.`};
   if(!has(f.ovr)||!has(f.val))return{n:0,err:`첫 시즌(${f.a}세)의 OVR과 몸값을 먼저 입력하세요.`};
   if(M<num(f.ovr))return{n:0,err:`최대 OVR(${M})이 첫 시즌 OVR(${num(f.ovr)})보다 낮습니다.`};
-  const all=mode==='all',userO=new Set(),userV=new Set();
+  const userO=new Set(),userV=new Set(),out=s=>has(s.ovr)&&(num(s.ovr)>M||(lo>0&&num(s.ovr)<lo));
   seq.forEach(s=>{
-    if(s===f||(has(s.ovr)&&(!all||!isAuto(s,'ovr'))))userO.add(s);
+    const keepO=has(s.ovr)&&(!all||!isAuto(s,'ovr'))&&!(isAuto(s,'ovr')&&out(s));
+    if(s===f||keepO)userO.add(s);
     if(s===f||(has(s.val)&&(!all||!isAuto(s,'val'))))userV.add(s);
   });
-  const r=ovvalPass(d,userO,userV,'prelim',M);if(r.err)return{n:0,err:r.err};
+  for(const s of userO){if(out(s))return{n:0,err:`${s.a}세 OVR(${num(s.ovr)})이 최소~최대 OVR 범위(${lo||'–'}~${M})를 벗어났습니다. 먼저 바로잡아 주세요.`}}
+  if(all)S.genSeed++;
+  const r=ovvalPass(d,userO,userV,'prelim',M,lo);if(r.err)return fail(r.err);
   carryAll(d.careers);
-  const n=autoGen(d,all);
-  ovvalPass(d,userO,userV,'final',M);
+  const g=autoGen(d,all,'club');if(g.err)return fail(g.err);
   carryAll(d.careers);
-  return{n:n,err:'',warn:r.warn||''};
+  ovvalPass(d,userO,userV,'ovr',M,lo);
+  carryAll(d.careers);
+  ovvalPass(d,userO,userV,'final',M,lo);
+  carryAll(d.careers);
+  return{n:g.n,err:'',warn:r.warn||''};
 }
-/* 자동 생성된 값만 지우기 */
-function clearAuto(d){
+/* 자동 생성된 값만 지우기 (scope: club | nat) */
+function clearAuto(d,scope){
   let n=0;
-  d.careers.forEach(c=>c.seasons.forEach(s=>{(s.au||[]).forEach(k=>{if(has(s[k])){s[k]='';n++}});s.au=[]}));
+  d.careers.forEach(c=>{
+    if(scope==='club'&&c.kind==='nat')return;if(scope==='nat'&&c.kind!=='nat')return;
+    c.seasons.forEach(s=>{(s.au||[]).forEach(k=>{if(k==='intl'){delete s.intl;n++;return}if(has(s[k])){s[k]='';n++}});s.au=[]});
+  });
   return n;
 }
 
@@ -1301,7 +1456,7 @@ const sv=v=>v==null||v===0?'':String(v);
 const blankSeason=a=>{const o={a:a,aw:[],tr:[],inj:false};STATK.forEach(k=>{o[k]=''});return o};
 const blankAgg=()=>({g:'',gl:'',as:'',cs:'',ga:'',rt:'',shirt:''});
 const blankCareer=(club,league,kind)=>({club:club,kind:kind||'club',league:league,ages:'',stints:[{s:'',y:''}],_ps:[{s:'',y:''}],reg:'',seasons:[],agg:blankAgg(),ex:[],notes:'',lt:[]});
-const seasonHas=s=>STATK.some(k=>has(s[k]))||s.aw.length>0||s.tr.length>0||s.cap!==undefined||s.vice!==undefined||!!s.inj;
+const seasonHas=s=>STATK.some(k=>has(s[k]))||s.aw.length>0||s.tr.length>0||s.cap!==undefined||s.vice!==undefined||!!s.inj||s.intl!==undefined;
 /* 입단 나이 + 활동 기간(년) ⇄ 나이 문자열 */
 function runs(ages){const a=parseAges(ages),r=[];a.forEach(x=>{const l=r[r.length-1];if(l&&l.e===x-1){l.e=x}else r.push({s:x,e:x})});return r.map(l=>({s:String(l.s),y:String(l.e-l.s+1)}))}
 const yrs=(t,club)=>club?Math.max(0,Math.floor(num(t.y))||0):Math.max(1,Math.floor(num(t.y))||1);
@@ -1325,12 +1480,12 @@ function removeClubAt(d,idx){
 }
 function newClubRow(d,club,league){const row=blankCareer(club,league),st=nextStart(d);row.stints=[{s:String(st),y:''}];row._ps=JSON.parse(JSON.stringify(row.stints));return row}
 const natCont=d=>(NATBY[d.nation]||{}).c||'';
-function draftNew(){return{id:null,name:'',nation:'',pos:'ST',value0:0,height:'',weight:'',foot:'',memo:'',ovr0:'',awx:{},careers:[blankCareer('','','nat')]}}
+function draftNew(){return{id:null,name:'',nation:'',pos:'ST',value0:0,height:'',weight:'',foot:'',memo:'',ovr0:'',ovrMin:'',awx:{},careers:[blankCareer('','','nat')]}}
 function draftFrom(p){
-  const d={id:p.id,ord:p.ord,awx:Object.assign({},p.awx||{}),ovr0:sv(p.ovr0),name:p.name||'',nation:p.nation||'',pos:p.pos||'ST',value0:num(p.value0!==undefined?p.value0:p.value),height:sv(p.height),weight:sv(p.weight),foot:p.foot||'',memo:p.memo||'',
+  const d={id:p.id,ord:p.ord,awx:Object.assign({},p.awx||{}),ovr0:sv(p.ovr0),ovrMin:sv(p.ovrMin),name:p.name||'',nation:p.nation||'',pos:p.pos||'ST',value0:num(p.value0!==undefined?p.value0:p.value),height:sv(p.height),weight:sv(p.weight),foot:p.foot||'',memo:p.memo||'',
     careers:(p.careers||[]).map(c=>({club:c.club,kind:c.kind||'club',league:c.league||'기타',ages:c.ages||'',
       stints:(function(){const r=runs(c.ages||'');return r.length?r:[{s:'',y:''}]})(),reg:c.reg||'',
-      seasons:(c.seasons||[]).map(s=>{const o=blankSeason(s.a);STATK.forEach(k=>{o[k]=sv(s[k])});o.aw=(s.aw||[]).slice();o.tr=(s.tr||[]).slice();if(s.cap!==undefined)o.cap=s.cap;if(s.vice!==undefined)o.vice=s.vice;o.inj=!!s.inj;o.au=(s.au||[]).slice();return o}),
+      seasons:(c.seasons||[]).map(s=>{const o=blankSeason(s.a);STATK.forEach(k=>{o[k]=sv(s[k])});o.aw=(s.aw||[]).slice();o.tr=(s.tr||[]).slice();if(s.cap!==undefined)o.cap=s.cap;if(s.vice!==undefined)o.vice=s.vice;if(s.intl!==undefined)o.intl=s.intl;o.inj=!!s.inj;o.au=(s.au||[]).slice();return o}),
       agg:Object.assign(blankAgg(),{g:sv((c.agg||{}).g),gl:sv((c.agg||{}).gl),as:sv((c.agg||{}).as),cs:sv((c.agg||{}).cs),ga:sv((c.agg||{}).ga),rt:sv((c.agg||{}).rt),shirt:String((c.agg||{}).shirt||'')}),
       ex:(c.ex||[]).slice(),notes:c.notes||'',lt:(c.lt||[]).map(t=>({n:t.n,c:t.c}))}))};
   d.careers.forEach(c=>{c._ps=JSON.parse(JSON.stringify(c.stints))});
@@ -1420,7 +1575,7 @@ function buildDoc(){
   d.careers.forEach(c=>{
     const nt=c.kind==='nat';
     const seasons=c.seasons.map(s=>{
-      const o={a:+s.a,aw:s.aw.slice(),tr:s.tr.slice()};if(s.cap!==undefined)o.cap=!!s.cap;if(s.vice!==undefined)o.vice=!!s.vice;if(s.inj)o.inj=true;
+      const o={a:+s.a,aw:s.aw.slice(),tr:s.tr.slice()};if(s.cap!==undefined)o.cap=!!s.cap;if(s.vice!==undefined)o.vice=!!s.vice;if(s.intl!==undefined)o.intl=!!s.intl;if(s.inj)o.inj=true;
       STATK.forEach(k=>{if(has(s[k]))o[k]=k==='shirt'?String(s[k]).trim():num(s[k])});
       if(s.au&&s.au.length){const au=s.au.filter(k=>has(o[k]));if(au.length)o.au=au}
       return o});
@@ -1439,6 +1594,7 @@ function buildDoc(){
   const nb=NATBY[nn];
   const doc={ord:d.ord||(S.players.reduce((m,p)=>Math.max(m,num(p.ord)),0)+1),name:d.name.trim(),cont:nb?nb.c:(prev&&prev.nation===nn?prev.cont:'기타'),nation:nn,pos:d.pos,
     value0:num(d.value0),foot:d.foot,ovr0:num(d.ovr0),careers:clubs.concat(ns)};
+  if(has(d.ovrMin))doc.ovrMin=num(d.ovrMin);
   if(has(d.height))doc.height=num(d.height);if(has(d.weight))doc.weight=num(d.weight);
   const ax={};Object.keys(d.awx||{}).forEach(k=>{if(num(d.awx[k])>0)ax[k]=num(d.awx[k])});if(Object.keys(ax).length)doc.awx=ax;
   if(has(d.memo))doc.memo=String(d.memo).trim();
@@ -1447,8 +1603,52 @@ function buildDoc(){
   return doc;
 }
 
+/* ---------- 입력 검증: 저장 전 막아야 하는 오류 ---------- */
+function validateDraft(d){
+  const errs=[],keys=new Set();
+  const add=(k,m)=>{if(k)keys.add(k);if(m)errs.push(m)};
+  const mn=has(d.ovrMin)?num(d.ovrMin):null,mx=has(d.ovr0)?num(d.ovr0):null;
+  if(mn!=null&&(mn<0||mn>99))add('ovrMin','최소 OVR은 0~99 사이로 입력하세요.');
+  if(mx!=null&&mx>99)add('ovr0','최대 OVR은 99 이하로 입력하세요.');
+  if(mn!=null&&mx!=null&&mn>mx){add('ovrMin',`최소 OVR(${mn})이 최대 OVR(${mx})보다 높습니다.`);add('ovr0','')}
+  d.careers.forEach((c,ci)=>{
+    const nt=c.kind==='nat';
+    c.seasons.forEach((s,si)=>{
+      const pf='careers.'+ci+'.seasons.'+si+'.',lb=`${nt?'국가대표':c.club} ${s.a}세`,g=num(s.g);
+      if(!nt&&has(s.ovr)){
+        const v=num(s.ovr);
+        if(mn!=null&&v<mn)add(pf+'ovr',`${lb}: OVR ${v}은(는) 최소 OVR ${mn}보다 낮아 저장할 수 없습니다.`);
+        else if(mx!=null&&v>mx)add(pf+'ovr',`${lb}: OVR ${v}은(는) 최대 OVR ${mx}보다 높아 저장할 수 없습니다.`);
+      }
+      if(!nt&&g>70)add(pf+'g',`${lb}: 클럽 경기수는 1년에 최대 70경기입니다.`);
+      if(nt){const cap=natCapOf(s);if(g>cap)add(pf+'g',`${lb}: 국제대회가 ${natIntl(s)?'있는':'없는'} 시즌은 대표팀 경기수가 최대 ${cap}경기입니다.${natIntl(s)?'':' (국제대회 시즌이라면 ‘기타’에서 ‘국제대회 참가’를 켜 주세요)'}`)}
+      if(has(s.min)&&num(s.min)>0){
+        const m=num(s.min),mxg=nt?(natIntl(s)?120:100):120;
+        if(!(g>0))add(pf+'min',`${lb}: 경기수가 0인데 출전 시간이 입력되어 있습니다.`);
+        else if(m<g)add(pf+'min',`${lb}: 출전 시간은 1경기당 최소 1분입니다. (${g}경기 → ${g}분 이상)`);
+        else if(m>g*mxg)add(pf+'min',`${lb}: 출전 시간이 경기수에 비해 너무 큽니다. (1경기 최대 ${mxg}분 → ${g*mxg}분 이하)`);
+      }
+    });
+  });
+  return{errs:errs,keys:keys};
+}
+/* 합계 입력과 연도별 합이 맞는지 안내 */
+function aggCheck(c,gk){
+  const ag=c.agg||{},keys=gk?['g','cs','ga','rt']:['g','gl','as','rt'],LB={g:'경기',gl:'골',as:'어시',cs:'클린시트',ga:'실점',rt:'평점'};
+  const act=keys.filter(k=>num(ag[k])>0);
+  if(!act.length||!c.seasons.some(s=>keys.some(k=>has(s[k]))))return '';
+  const diff=[];
+  act.forEach(k=>{
+    let sum,tgt=num(ag[k]);
+    if(k==='rt'){const r=c.seasons.map(s=>num(s.rt)).filter(v=>v>0);sum=r.length?r.reduce((a,b)=>a+b,0)/r.length:0;if(Math.abs(sum-tgt)>=.005)diff.push(`${LB[k]} ${Math.round(sum*100)/100}/${tgt}`)}
+    else{sum=c.seasons.reduce((t,s)=>t+num(s[k]),0);if(sum!==tgt)diff.push(`${LB[k]} ${sum}/${tgt}`)}
+  });
+  return diff.length?`<div class="hint" style="color:var(--bad)">연도별 합이 입력한 합계와 다릅니다 (연도별/합계): ${diff.join(' · ')} — ‘자동 생성’ 또는 ‘다시 설정’을 누르면 합계에 맞춰 다시 나눕니다.</div>`:`<div class="hint" style="color:var(--good,#2a9d6f)">✓ 연도별 합이 입력한 합계와 정확히 일치합니다.</div>`;
+}
+
 /* ---------- form: pieces ---------- */
-const fi=(path,label,o)=>{o=o||{};return `<div class="fld"><label for="f-${path}">${label}</label><input id="f-${path}" data-f="${path}" type="text"${o.mode?` inputmode="${o.mode}"`:''} value="${esc(getP(S.draft,path))}"${o.ph?` placeholder="${esc(o.ph)}"`:''}${o.ages!=null?` data-ages="${o.ages}"`:''} autocomplete="off"></div>`};
+const isBad=p=>!!(S.bad&&S.bad.has(p));
+const fi=(path,label,o)=>{o=o||{};return `<div class="fld"><label for="f-${path}">${label}</label><input id="f-${path}" data-f="${path}"${isBad(path)?' class="bad" aria-invalid="true"':''} type="text"${o.mode?` inputmode="${o.mode}"`:''} value="${esc(getP(S.draft,path))}"${o.ph?` placeholder="${esc(o.ph)}"`:''}${o.ages!=null?` data-ages="${o.ages}"`:''} autocomplete="off"></div>`};
 const hd=(n,t)=>`<div class="fh"><i>${n}</i><h2>${t}</h2></div>`;
 
 function natListHTML(){
@@ -1529,13 +1729,14 @@ function etcPanel(c,ci,si){
   const up=s.tr.indexOf('승격')>=0,dn=s.tr.indexOf('강등')>=0;
   return `<div class="pn"><h4>기타 — ${nt?'완장과 부상 여부':'완장 · 부상 · 승격 · 강등 · 임대'}</h4>
   <div class="pchips">${b('roletog" data-arg="cap','주장',s._cap,false,s._cap&&s._ci?'자동 연장':'')}${b('roletog" data-arg="vice','부주장',s._vice,!!s._cap,s._vice&&s._vi?'자동 연장':'')}${b('roletog" data-arg="inj','부상',!!s.inj,false,'')}</div>
-  ${nt?'':`<div class="pchips" style="padding-top:6px">${tg('승격','승격',dn||s._tier===1)}${tg('강등','강등',up||s._tier===2)}${tg('임대','임대',false)}</div>
+  ${nt?`<div class="pchips" style="padding-top:6px">${b('roletog" data-arg="intl','국제대회 참가',natIntl(s),(s.tr||[]).some(t=>TR_NAT.indexOf(t)>=0),s.intl===true&&isAuto(s,'intl')?'자동 배정':'')}</div>
+  <div class="hint">국제대회(월드컵·대륙 대회 등)가 열리는 시즌은 대표팀 경기가 1년 최대 20경기, 그 외 시즌은 최대 10경기입니다. 대표팀 대회 트로피를 선택한 시즌은 자동으로 국제대회 시즌입니다. 직접 지정하지 않으면 자동 생성 때 2년 주기로 배정됩니다.</div>`:`<div class="pchips" style="padding-top:6px">${tg('승격','승격',dn||s._tier===1)}${tg('강등','강등',up||s._tier===2)}${tg('임대','임대',false)}</div>
   <div class="hint">이 시즌 소속: <b>${s._tier===2?'2부 리그':'1부 리그'}</b> · 승격을 체크하면 다음 시즌부터 1부 리그 트로피를, 강등을 체크하면 다음 시즌부터 2부 리그 트로피를 선택할 수 있습니다.</div>`}
   <div class="hint">주장·부주장은 체크하면 다음 시즌에도 자동으로 이어지고, 이어지는 시즌에서 눌러 해제하면 끊깁니다. 한 시즌에 주장과 부주장은 동시에 선택할 수 없습니다. 부상은 시즌마다 따로 표시합니다.</div></div>`;
 }
 function detPanel(c,ci,si,gk){
   const pf='careers.'+ci+'.seasons.'+si+'.';
-  const f=(k,l)=>`<div class="fld"><label for="f-${pf}${k}">${l}</label><input id="f-${pf}${k}" data-f="${pf}${k}" type="text" inputmode="numeric" value="${esc(c.seasons[si][k])}" autocomplete="off"></div>`;
+  const f=(k,l)=>`<div class="fld"><label for="f-${pf}${k}">${l}</label><input id="f-${pf}${k}" data-f="${pf}${k}"${isBad(pf+k)?' class="bad" aria-invalid="true"':''} type="text" inputmode="numeric" value="${esc(c.seasons[si][k])}" autocomplete="off"></div>`;
   return `<div class="pn"><h4>상세 스탯 — 경기 · 득점 · 어시스트 · 평점은 위 입력 칸에 있습니다</h4>${DET.map((g,gi)=>{
     let items=g[1].filter(x=>!(gk&&(x[0]==='cs'||x[0]==='ga')));
     if(gk&&gi===0)items=[['gl','득점',1],['as','어시스트',1]].concat(items);
@@ -1543,16 +1744,16 @@ function detPanel(c,ci,si,gk){
 }
 function seasonHTML(c,ci,si,gk){
   const s=c.seasons[si],k=ci+'.'+si,pf='careers.'+ci+'.seasons.'+si+'.',nt=c.kind==='nat';
-  const f=(key,l,mode,ph)=>`<div class="fld"><label for="f-${pf}${key}">${l}</label><input id="f-${pf}${key}" data-f="${pf}${key}" type="text" inputmode="${mode||'numeric'}" value="${esc(s[key])}"${has(ph)?` placeholder="${esc(ph)}" title="비워 두면 전년도 값(${esc(ph)})이 적용됩니다"`:''} autocomplete="off"></div>`;
+  const f=(key,l,mode,ph)=>`<div class="fld"><label for="f-${pf}${key}">${l}</label><input id="f-${pf}${key}" data-f="${pf}${key}"${isBad(pf+key)?' class="bad" aria-invalid="true"':''} type="text" inputmode="${mode||'numeric'}" value="${esc(s[key])}"${has(ph)?` placeholder="${esc(ph)}" title="비워 두면 전년도 값(${esc(ph)})이 적용됩니다"`:''} autocomplete="off"></div>`;
   const ph=(v,carried)=>carried?String(v):'';
   const open=S.panel;
   return `<div class="season"><div class="sh"><b>${s.a}<small>세</small></b><span style="display:flex;gap:6px;flex-wrap:wrap">
-    <button class="pbtn" data-act="panel" data-arg="${k}.etc" aria-pressed="${open===k+'.etc'}">기타<i>${(s._cap||s._vice?1:0)+(s.inj?1:0)+s.tr.filter(t=>TR_REC.indexOf(t)>=0).length||''}</i></button>
+    <button class="pbtn" data-act="panel" data-arg="${k}.etc" aria-pressed="${open===k+'.etc'}">기타<i>${(s._cap||s._vice?1:0)+(s.inj?1:0)+(nt&&natIntl(s)?1:0)+s.tr.filter(t=>TR_REC.indexOf(t)>=0).length||''}</i></button>
     <button class="pbtn" data-act="panel" data-arg="${k}.aw" aria-pressed="${open===k+'.aw'}">개인수상<i>${s.aw.length}</i></button>
     <button class="pbtn" data-act="panel" data-arg="${k}.tr" aria-pressed="${open===k+'.tr'}">트로피<i>${s.tr.filter(t=>TR_REC.indexOf(t)<0).length}</i></button>
     <button class="pbtn" data-act="panel" data-arg="${k}.det" aria-pressed="${open===k+'.det'}">상세 스탯</button>
     <button class="pbtn" data-act="rmseason" data-ci="${ci}" data-si="${si}" aria-label="${s.a}세 행 삭제">삭제</button></span></div>
-  <div class="nn">${nt?`<div class="fld"><span class="lb">OVR (클럽 ${s.a}세와 동일)</span><div class="ro">${has(s._o)?esc(s._o):'-'}</div></div>`:f('ovr','OVR','numeric',ph(s._o,s._co))}${nt?'':f('val','몸값 (€M)','decimal',ph(s._v,s._cv))}${f('shirt','등번호','text',ph(s._s,s._cs))}${f('g',nt?'경기':'경기 (0–70)')}${gk?f('cs','클린시트')+f('ga','실점'):f('gl','골')+f('as','어시')}${f('rt','평점','decimal')}</div>
+  <div class="nn">${nt?`<div class="fld"><span class="lb">OVR (클럽 ${s.a}세와 동일)</span><div class="ro">${has(s._o)?esc(s._o):'-'}</div></div>`:f('ovr','OVR','numeric',ph(s._o,s._co))}${nt?'':f('val','몸값 (€M)','decimal',ph(s._v,s._cv))}${f('shirt','등번호','text',ph(s._s,s._cs))}${f('g',nt?'경기 (0–'+natCapOf(s)+')':'경기 (0–70)')}${gk?f('cs','클린시트')+f('ga','실점'):f('gl','골')+f('as','어시')}${f('rt','평점','decimal')}</div>
   ${(s.aw.length||s.tr.length)&&open.indexOf(k+'.')!==0?`<div class="tags">${awChips(s)}${trChips(s)}</div>`:''}
   ${open===k+'.aw'?awPanel(c,ci,si):open===k+'.tr'?trPanel(c,ci,si):open===k+'.etc'?etcPanel(c,ci,si):open===k+'.det'?detPanel(c,ci,si,gk):''}</div>`;
 }
@@ -1560,7 +1761,6 @@ function careerEditor(c,ci,gk){
   const nt=c.kind==='nat',d=S.draft;
   const err=ageConflict(d,ci);
   const agg=cst(c);
-  const aggOpen=!agg.any&&(num(c.agg.g)||num(c.agg.gl)||num(c.agg.as)||num(c.agg.cs)||num(c.agg.ga)||num(c.agg.rt));
   return `<div class="card"><div class="ch"><div><h3>${nt?'국가대표 · '+(d.nation?esc(d.nation):'<span class="muted">국적을 먼저 선택하세요</span>'):esc(c.club)}</h3><small>${nt?'입력하지 않으면 저장되지 않습니다':esc(c.league)}</small></div>${nt?'':`<button class="btn sm" data-act="rmcareer" data-arg="${ci}" aria-label="${esc(c.club)} 삭제">삭제</button>`}</div>
   <div class="stline">${(c.stints||[{s:'',y:''}]).map((t,ri)=>`<div class="stint">${nt?`<div class="fld"><label for="f-careers.${ci}.stints.${ri}.s">${(c.stints||[]).length>1?ri+1+'번째 구간 · ':''}입단 나이 (${AGE_MIN}~${AGE_MAX})</label><input id="f-careers.${ci}.stints.${ri}.s" data-f="careers.${ci}.stints.${ri}.s" data-stint="${ci}" type="text" inputmode="numeric" value="${esc(t.s)}" placeholder="예: 16" autocomplete="off"></div>`:`<div class="fld"><span class="lb">${(c.stints||[]).length>1?ri+1+'번째 구간 · ':''}시작 나이</span><div class="ro"><b>${esc(t.s||'-')}</b>세부터 (자동)</div></div>`}<div class="fld"><label for="f-careers.${ci}.stints.${ri}.y">활동 기간 (년)</label><input id="f-careers.${ci}.stints.${ri}.y" data-f="careers.${ci}.stints.${ri}.y" data-stint="${ci}" type="text" inputmode="numeric" value="${esc(t.y)}" placeholder="예: 5" autocomplete="off"></div>${(c.stints||[]).length>1?`<button class="btn sm" data-act="strm" data-ci="${ci}" data-ri="${ri}" aria-label="${ri+1}번째 구간 삭제">구간 삭제</button>`:'<span></span>'}</div>`).join('')}
   <div class="hint">나이 범위: <b>${esc(c.ages||'—')}</b>${nt?' · 입단 나이와 기간만 입력하면 자동 계산됩니다. (예: 16 + 5년 → 16-20)':' · 첫 클럽은 16세부터 시작하고, 다음 클럽은 이전 클럽의 다음 나이부터 자동으로 이어집니다. 활동 기간(년)만 입력하세요.'}</div>
@@ -1569,9 +1769,10 @@ function careerEditor(c,ci,gk){
   ${err?`<div class="err" role="alert">${esc(err)}</div>`:''}
   ${regPicker(c,ci)}
   ${c.seasons.length?c.seasons.map((s,si)=>seasonHTML(c,ci,si,gk)).join(''):'<div class="hint">활동 기간(년)을 입력하면 나이별 입력 칸이 생깁니다. OVR · 몸값 · 등번호를 비워 두면 전년도 값이 자동 적용됩니다.</div>'}
-  <details${aggOpen?' open':''}><summary class="hint sm">연도별 입력 없이 합계만 입력</summary>
-  <div class="n4" style="padding-top:8px">${fi('careers.'+ci+'.agg.g','경기',{mode:'numeric'})}${gk?fi('careers.'+ci+'.agg.cs','클린시트',{mode:'numeric'})+fi('careers.'+ci+'.agg.ga','실점',{mode:'numeric'}):fi('careers.'+ci+'.agg.gl','골',{mode:'numeric'})+fi('careers.'+ci+'.agg.as','어시',{mode:'numeric'})}${fi('careers.'+ci+'.agg.rt','평점',{mode:'decimal'})}</div>
-  <div class="hint" style="padding-top:6px">연도별 경기·골·어시·평점이 하나라도 입력되면 연도별 합산 값이 우선 적용됩니다. 합계가 있는 상태에서 ‘스탯 자동 생성’을 누르면 이 합계에 맞춰 연도별로 나눕니다.</div></details>
+  <div class="aggbox"><div class="lb">합계 입력 <span class="hint">(연도별 입력 대신 사용할 수 있습니다)</span></div>
+  <div class="n4" style="padding-top:6px">${fi('careers.'+ci+'.agg.g','경기',{mode:'numeric'})}${gk?fi('careers.'+ci+'.agg.cs','클린시트',{mode:'numeric'})+fi('careers.'+ci+'.agg.ga','실점',{mode:'numeric'}):fi('careers.'+ci+'.agg.gl','골',{mode:'numeric'})+fi('careers.'+ci+'.agg.as','어시',{mode:'numeric'})}${fi('careers.'+ci+'.agg.rt','평점',{mode:'decimal'})}</div>
+  <div class="hint" style="padding-top:6px">합계를 입력한 뒤 ‘자동 생성’ 또는 ‘다시 설정’을 누르면 시즌별 경기·${gk?'클린시트·실점':'골·어시'}·평점이 <b>합계와 정확히 같아지도록</b> 나뉩니다. 직접 입력한 시즌 값은 고정되고, 나머지 시즌이 남은 값을 나눠 가집니다. 연도별 값이 하나라도 있으면 연도별 합산 값이 우선 표시됩니다.${nt?' 국가대표는 국제대회 시즌 1년 최대 20경기, 그 외 10경기 안에서 나뉩니다.':' 클럽은 1년 최대 70경기입니다.'}</div>
+  ${aggCheck(c,gk)}</div>
   ${nt?natExtra(c,ci):''}</div>`;
 }
 function regPicker(c,ci){
@@ -1585,29 +1786,32 @@ function natExtra(c,ci){
 function formHTML(){
   const d=S.draft,gk=d.pos==='GK';
   carryAll(d.careers);
-  const doc=buildDoc(),anchor=ovAnchor(d);
+  const doc=buildDoc(),anchor=ovAnchor(d),V=validateDraft(d);S.bad=V.keys;
   const clubIdx=[],natIdx=[];d.careers.forEach((c,i)=>(c.kind==='nat'?natIdx:clubIdx).push(i));
   const RT=['info','club','nat','memo'],rt=RT.indexOf(S.rtab)>=0?S.rtab:'info',rtl={info:'선수 정보',club:'클럽',nat:'국가대표',memo:'메모'};
   const sec=(k,html)=>rt===k?html:'';
   return `<h2 style="padding-top:12px">${d.id?'선수 수정':'선수 등록'}</h2>
   <div class="rtabs" role="tablist">${RT.map(k=>`<button class="tab" role="tab" data-act="rtab" data-arg="${k}"${rt===k?' aria-current="page"':''}>${rtl[k]}${k==='club'&&clubIdx.length?' '+clubIdx.length:''}</button>`).join('')}</div>
   ${sec('info',`<div class="fs">${hd(1,'선수 정보')}<div class="fg">${natPickerHTML()}${fi('name','이름',{ph:'예: LEE SEUNG HYUN'})}${fi('height','키 (cm)',{mode:'numeric',ph:'예: 180'})}${fi('weight','몸무게 (kg)',{mode:'numeric',ph:'예: 75'})}
-    <div class="fld"><label for="f-pos">포지션</label><select id="f-pos" data-f="pos">${POS.map(p=>`<option${p===d.pos?' selected':''}>${p}</option>`).join('')}</select></div>${fi('ovr0','최대 OVR',{mode:'numeric',ph:'예: 92'})}</div>
+    <div class="fld" style="grid-column:1/-1"><label for="f-pos">포지션</label><select id="f-pos" data-f="pos">${POS.map(p=>`<option${p===d.pos?' selected':''}>${p}</option>`).join('')}</select></div>${fi('ovrMin','최소 OVR',{mode:'numeric',ph:'예: 80'})}${fi('ovr0','최대 OVR',{mode:'numeric',ph:'예: 92'})}</div>
     <div class="fld"><label>주발</label><div class="seg" role="group" aria-label="주발">${['왼발','오른발','양발'].map(f=>`<button class="chip" data-act="foot" data-arg="${f}" aria-pressed="${d.foot===f}">${f}</button>`).join('')}</div></div>
-    <div class="hint">최대 OVR은 선수 생활 중 한 번은 반드시 달성되며, 자동 생성되는 OVR은 이 값을 넘지 않습니다. 최대 몸값은 연도별 몸값 중 가장 높은 값이 자동 반영됩니다.</div></div>`)}
+    <div class="hint">OVR은 <b>최소 OVR ~ 최대 OVR</b> 범위 안에서만 자동 생성되고, 시즌별로 직접 입력하는 OVR도 이 범위를 벗어나면 저장할 수 없습니다. 자동 생성 시 최대 OVR은 선수 생활 중 한 번 반드시 달성되지만, 최소 OVR은 달성하지 않아도 됩니다. 최소 OVR은 선수 상세 화면에 표시되지 않습니다. 최대 몸값은 연도별 몸값 중 가장 높은 값이 자동 반영됩니다.</div></div>`)}
   ${sec('club',`<div class="fs">${hd(1,'클럽 선택')}<div class="hint">국가 → 리그 → 클럽 순으로 고르세요. 선수가 거친 클럽을 모두 선택할 수 있습니다. (선택 ${clubIdx.length}개)</div>${clubPickHTML()}</div>
   <div class="fs">${hd(2,'클럽 경력')}${Object.keys(d.awx||{}).length?`<div class="card"><span class="lb">연도 미상 개인 수상 (기존에 입력된 값 — 연도별 수상으로 옮기면 0으로 줄이세요)</span>${Object.keys(d.awx).map(k=>`<div class="chk" style="justify-content:space-between"><span>${esc(k)}</span><span><button class="btn sm" data-act="awxstep" data-arg="${esc(k)}" data-d="-1" aria-label="${esc(k)} 감소">−</button> <b style="display:inline-block;min-width:28px;text-align:center">${num(d.awx[k])}</b> <button class="btn sm" data-act="awxstep" data-arg="${esc(k)}" data-d="1" aria-label="${esc(k)} 증가">+</button></span></div>`).join('')}</div>`:''}
     <div class="hint">클럽마다 나이 범위를 입력하면 나이별로 OVR · 몸값 · 등번호 · 경기 · ${gk?'클린시트 · 실점':'골 · 어시'} · 평점과 개인 수상, 팀 우승 트로피, 상세 스탯을 기록할 수 있습니다. 클럽 경기수는 1년에 최대 70경기입니다.</div>
-    <div class="card"><h3>자동 생성 (OVR · 몸값 · 스탯)</h3><div class="hint">선수 정보의 <b>최대 OVR</b>과 첫 시즌(가장 어린 나이)의 OVR·몸값을 입력하면 버튼이 활성화됩니다. 버튼 한 번으로 ① 최대 OVR을 향해 시즌마다 자연스럽게 오르내리는 OVR·몸값 → ② 포지션(${esc(d.pos)})에 맞는 스탯 → ③ 스탯을 반영한 몸값이 차례로 채워집니다. 최대 OVR 시즌에는 스탯이 가장 좋게 생성됩니다. <b>직접 입력한 값은 어떤 버튼을 눌러도 그대로 유지</b>되고, 그 값을 바탕으로 나머지가 생성됩니다.</div>
-      ${anchor?`<div class="hint">기준 시즌: <b>${anchor.a}세</b> · OVR ${esc(anchor.ovr)} · 몸값 €${esc(anchor.val)}M · 최대 OVR ${has(d.ovr0)?'<b>'+esc(d.ovr0)+'</b>':'<b style="color:var(--err,#c33)">미입력</b>'}</div>`:'<div class="hint">첫 시즌의 OVR과 몸값을 입력하면 버튼이 활성화됩니다.</div>'}
-      <div class="actions" style="padding-top:0"><button class="btn pri" data-act="autoall" data-mode="fill"${anchor?'':' disabled'}>자동 생성 (빈 칸만)</button><button class="btn" data-act="autoall" data-mode="all"${anchor?'':' disabled'}>다시 설정</button><button class="btn" data-act="clearauto">자동 생성 값 지우기</button></div>
-      <div class="hint">‘다시 설정’은 자동 생성된 값만 새로 만들고, ‘지우기’는 자동 생성된 값만 다시 빈 칸으로 되돌립니다. 마음에 들지 않으면 여러 번 눌러 보세요.</div></div>
+    <div class="card"><h3>클럽 자동 생성 (OVR · 몸값 · 스탯)</h3><div class="hint"><b>클럽 전용</b> 버튼입니다. 국가대표 값은 바뀌지 않지만, 국가대표 성적과 수상은 OVR·몸값 계산에 반영됩니다. 선수 정보의 <b>최대 OVR</b>과 첫 시즌(가장 어린 나이)의 OVR·몸값을 입력하면 버튼이 활성화됩니다. ① 최소~최대 OVR 범위에서 오르내리는 OVR·몸값 → ② 포지션(${esc(d.pos)})에 맞는 스탯 → ③ 스탯(이전 시즌 대비 성과)을 반영한 OVR → ④ 성과·수상·우승을 반영한 몸값 순서로 채워집니다. 합계를 입력한 항목은 모든 시즌의 합이 합계와 정확히 같아집니다. <b>직접 입력한 값은 어떤 버튼을 눌러도 그대로 유지</b>됩니다.</div>
+      ${anchor?`<div class="hint">기준 시즌: <b>${anchor.a}세</b> · OVR ${esc(anchor.ovr)} · 몸값 €${esc(anchor.val)}M · OVR 범위 ${has(d.ovrMin)?'<b>'+esc(d.ovrMin)+'</b>':'–'} ~ ${has(d.ovr0)?'<b>'+esc(d.ovr0)+'</b>':'<b style="color:var(--bad)">최대 OVR 미입력</b>'}</div>`:'<div class="hint">첫 시즌의 OVR과 몸값을 입력하면 버튼이 활성화됩니다.</div>'}
+      <div class="actions" style="padding-top:0"><button class="btn pri" data-act="autoall" data-mode="fill" data-scope="club"${anchor?'':' disabled'}>자동 생성 (빈 칸만)</button><button class="btn" data-act="autoall" data-mode="all" data-scope="club"${anchor?'':' disabled'}>다시 설정</button><button class="btn" data-act="clearauto" data-scope="club">자동 생성 값 지우기</button></div>
+      <div class="hint">‘다시 설정’은 자동 생성된 값만 새로 만들고, ‘지우기’는 자동 생성된 값만 다시 빈 칸으로 되돌립니다. 합계가 입력된 항목은 자동 생성 값 전체를 합계에 맞춰 다시 계산합니다. 클럽 버튼은 국가대표에 영향을 주지 않습니다.</div></div>
     ${clubIdx.length?clubIdx.map(i=>careerEditor(d.careers[i],i,gk)).join(''):'<div class="empty">위에서 클럽을 선택하면 경력 입력 칸이 생깁니다.</div>'}</div>`)}
   ${sec('nat',`<div class="fs">${hd(1,'국가대표 경력')}<div class="hint">대표팀은 1개만 입력할 수 있고, 아무것도 입력하지 않으면 저장되지 않습니다. 국적(${esc(d.nation||'미선택')})의 대륙에서 참가할 수 없는 대회는 숨겨집니다.</div>
+    <div class="card"><h3>국가대표 자동 생성 (스탯)</h3><div class="hint"><b>국가대표 전용</b> 버튼입니다. 클럽 값(OVR·몸값·스탯)은 바뀌지 않습니다. 국제대회가 있는 시즌은 1년 최대 20경기, 없는 시즌은 최대 10경기로 생성됩니다. 국제대회 시즌은 시즌의 ‘기타 → 국제대회 참가’에서 지정할 수 있고, 지정하지 않으면 2년 주기로 자동 배정됩니다. 국가대표 OVR은 같은 나이의 클럽 OVR과 동일합니다. 합계를 입력했다면 모든 시즌의 합이 합계와 정확히 같아집니다.</div>
+      <div class="actions" style="padding-top:0"><button class="btn pri" data-act="autoall" data-mode="fill" data-scope="nat">자동 생성 (빈 칸만)</button><button class="btn" data-act="autoall" data-mode="all" data-scope="nat">다시 설정</button><button class="btn" data-act="clearauto" data-scope="nat">자동 생성 값 지우기</button></div></div>
     ${natIdx.slice(0,1).map(i=>careerEditor(d.careers[i],i,gk)).join('')}</div>`)}
   ${sec('memo',`<div class="fs">${hd(1,'메모')}<div class="fld"><label class="sr" for="f-memo">메모</label><textarea id="f-memo" data-f="memo" rows="4" placeholder="이 선수에 대한 메모를 자유롭게 적어 두세요.">${esc(d.memo||'')}</textarea></div></div>`)}
   <div class="fs"><div class="sum">자동 집계 · 최대 OVR <b>${doc.ovr||'-'}</b> · 최대 몸값 <b>€${fmt(doc.value)}M</b> · 트로피 <b>${doc.trophies}</b>개 · 발롱도르 <b>${doc.bd}</b> · 골든부츠 <b>${doc.gb}</b> · 골든 글러브 <b>${doc.gg}</b> · 경기 <b>${fmt(doc.games)}</b></div></div>
-  <div class="actions" style="padding-top:20px"><button class="btn pri" data-act="save"${S.saving?' disabled':''}>${d.id?'수정 저장':'선수 등록하기'}</button><button class="btn" data-act="preview">미리보기</button><button class="btn" data-act="cancel">취소</button></div>
+  ${V.errs.length?`<div class="note" role="alert" style="margin-top:16px;border:1px solid var(--bad);color:var(--bad)"><b>저장할 수 없습니다 — 입력 오류 ${V.errs.length}건</b><ul style="margin:6px 0 0;padding-left:18px">${V.errs.slice(0,6).map(m=>`<li>${esc(m)}</li>`).join('')}${V.errs.length>6?`<li>외 ${V.errs.length-6}건</li>`:''}</ul></div>`:''}
+  <div class="actions" style="padding-top:20px"><button class="btn pri" data-act="save"${S.saving||V.errs.length?' disabled':''}>${V.errs.length?'저장 불가 (입력 오류)':d.id?'수정 저장':'선수 등록하기'}</button><button class="btn" data-act="preview">미리보기</button><button class="btn" data-act="cancel">취소</button></div>
   <div class="err" role="alert" style="padding-top:8px">${esc(S.formErr)}</div>`;
 }
 async function save(){
@@ -1621,9 +1825,9 @@ async function save(){
       else{
         const oob=c.seasons.find(s=>seasonHas(s)&&(+s.a<AGE_MIN||+s.a>AGE_MAX));
         if(oob)S.formErr=`${c.kind==='nat'?'국가대표':c.club} ${oob.a}세: 나이는 ${AGE_MIN}~${AGE_MAX}세만 가능합니다. 해당 나이 칸을 삭제해 주세요.`;
-        else if(c.kind!=='nat'){const b=c.seasons.find(s=>num(s.g)>70);if(b)S.formErr=`${c.club} ${b.a}세: 클럽 경기수는 1년에 최대 70경기입니다.`}
       }
     }
+    if(!S.formErr){const ve=validateDraft(d).errs;if(ve.length)S.formErr=ve[0]+(ve.length>1?` (외 ${ve.length-1}건)`:'')}
   }
   if(S.formErr){render();return}
   if(!DB||!S.col){S.formErr='데이터베이스에 연결되지 않았습니다. 로그인 상태를 확인하세요.';render();return}
@@ -1673,6 +1877,7 @@ function render(){S.inR=true;try{render0()}finally{S.inR=false}}
 function render0(){
   const a=$('#app');
   document.querySelectorAll('.tab').forEach(t=>{const v=t.getAttribute('data-arg'),on=(v==='home'&&(S.view==='home'||S.view==='detail'))||v===S.view;if(on)t.setAttribute('aria-current','page');else t.removeAttribute('aria-current')});
+  document.body.classList.toggle('inreg',S.view==='register'&&!S.loginNeeded);
   const ac=$('#acct');if(ac){const au=window.__auth;ac.innerHTML=(S.uname?`<span class="an">${esc(S.uname)}</span>`:'')+(au&&au.logged?'<button class="btn sm" data-act="logout">로그아웃</button>':'')}
   document.body.style.overflow=(S.preview&&S.view==='register')||(S.cmp.pick&&S.view==='compare')?'hidden':'';
   if(S.loginNeeded){a.innerHTML=`<div class="empty" style="padding:56px 16px"><b style="font-size:20px">로그인이 필요합니다</b>Google 계정으로 로그인하면 내 선수 목록이 저장되고, 다른 기기에서도 볼 수 있습니다.${(window.__auth&&window.__auth.err)?`<div class="err" role="alert" style="margin-top:12px">${esc(window.__auth.err)}</div>`:''}<div class="actions" style="justify-content:center;padding-top:16px"><button class="btn pri" data-act="login">Google로 로그인</button></div></div>`;return}
@@ -1733,7 +1938,7 @@ document.addEventListener('click',e=>{
     case'panel':S.panel=S.panel===arg?'':arg;render();break;
     case'rmseason':{const c=d.careers[+D.ci];c.seasons.splice(+D.si,1);S.panel='';render();break}
     case'trtog':{const s=d.careers[+D.ci].seasons[+D.si],i=s.tr.indexOf(arg);if(i>=0)s.tr.splice(i,1);else{if(trBlocked(s.tr,arg)){toast('같은 시즌에 함께 선택할 수 없는 대회입니다.');break}s.tr.push(arg)}render();break}
-    case'clearauto':{const n=clearAuto(d);d.careers.forEach(c=>{if(c.kind==='nat')c.seasons.forEach(se=>{se.ovr=''})});toast(n?`자동 생성된 ${n}개 값을 지웠습니다.`:'지울 자동 생성 값이 없습니다.');render();break}
+    case'clearauto':{const sc=D.scope==='nat'?'nat':'club';const n=clearAuto(d,sc);if(sc==='club')d.careers.forEach(c=>{if(c.kind==='nat')c.seasons.forEach(se=>{se.ovr=''})});toast(n?`자동 생성된 ${n}개 값을 지웠습니다.`:'지울 자동 생성 값이 없습니다.');render();break}
     case'awadd':{const c=d.careers[+D.ci],s=c.seasons[+D.si],nt=c.kind==='nat';
       const scopes=nt?awScopesNat(natCont(d)):awScopesClub(c),sc=scopes.indexOf(S.awSel.scope)>=0?S.awSel.scope:scopes[0];
       const v=(AW_G.indexOf(S.awSel.type)>=0&&!nt)?S.awSel.type:S.awSel.type+'|'+sc;
@@ -1744,12 +1949,13 @@ document.addEventListener('click',e=>{
     case'autoall':{
       const bad=d.careers.findIndex((c,i)=>ageConflict(d,i));
       if(bad>=0){toast('나이 범위를 먼저 바로잡아 주세요: '+ageConflict(d,bad));break}
-      if(D.mode==='all')S.genSeed++;
-      const r=autoAll(d,D.mode==='all'?'all':'fill');
-      toast(r.err||(r.warn?r.warn:(r.n?`${r.n}개 시즌의 스탯과 OVR · 몸값을 생성했습니다.`:'생성할 나이별 칸이 없습니다.')));render();break}
+      const sc=D.scope==='nat'?'nat':'club';
+      const r=autoAll(d,D.mode==='all'?'all':'fill',sc);
+      toast(r.err||(r.warn?r.warn:(r.n?(sc==='nat'?`${r.n}개 시즌의 국가대표 스탯을 생성했습니다.`:`${r.n}개 시즌의 스탯과 OVR · 몸값을 생성했습니다.`):'생성할 나이별 칸이 없습니다.')));render();break}
     case'roletog':{
       const s=d.careers[+D.ci].seasons[+D.si];
       if(arg==='inj'){s.inj=!s.inj}
+      else if(arg==='intl'){s.intl=!natIntl(s);s.au=(s.au||[]).filter(x=>x!=='intl')}
       else if(arg==='cap'){if(s._cap){s.cap=false}else{s.cap=true;s.vice=false}}
       else if(arg==='vice'){if(s._cap){toast('주장인 시즌에는 부주장을 선택할 수 없습니다.');break}if(s._vice){s.vice=false}else{s.vice=true}}
       render();break}
@@ -1784,7 +1990,7 @@ document.addEventListener('change',e=>{
   else if(id==='awScope'){S.awSel.scope=e.target.value}
   else if(S.view==='register'&&S.draft&&e.target.hasAttribute('data-ages')){capture(true);applyAges(+e.target.getAttribute('data-ages'),true,true)}
   else if(S.view==='register'&&S.draft&&e.target.hasAttribute('data-stint')){stintChange(+e.target.getAttribute('data-stint'),true)}
-  else if(S.view==='register'&&S.draft&&/\.(ovr|val)$/.test(e.target.getAttribute('data-f')||'')){capture();renderKF()}
+  else if(S.view==='register'&&S.draft&&(/\.(ovr|val|g|min)$/.test(e.target.getAttribute('data-f')||'')||['ovr0','ovrMin'].indexOf(e.target.getAttribute('data-f'))>=0)){capture();renderKF()}
   else if(S.view==='register'&&S.draft&&e.target.hasAttribute('data-rerender')){capture();render()}
 });
 
