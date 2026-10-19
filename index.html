@@ -84,6 +84,7 @@ button{cursor:pointer}
 .drnav{flex:1;overflow-y:auto;padding:6px 10px;display:flex;flex-direction:column;gap:4px}
 .dritem{min-height:52px;text-align:left;padding:0 14px;border:none;border-radius:12px;background:none;color:var(--fg);font-size:16px;font-weight:600}
 .dritem:hover,.dritem:active{background:var(--surface2)}
+.dritem .drsub{color:var(--muted);font-weight:500}
 .drfoot{border-top:1px solid color-mix(in srgb,var(--line) 55%,transparent);padding:10px 10px calc(10px + env(safe-area-inset-bottom,0px))}
 .prof{display:flex;align-items:center;gap:10px;width:100%;min-height:52px;padding:0 12px;border:none;border-radius:14px;background:none;color:var(--fg);text-align:left}
 .prof:hover{background:var(--surface2)}
@@ -968,7 +969,10 @@ function autoGen(d,overwrite,scope){
       const hon=honors(s);
       /* 시즌 폼(그 해의 컨디션): OVR과 무관하게 성적이 좋거나 나쁠 수 있다 */
       const form=gauss(mulberry(hstr(d.name+'|form|'+c.club+'|'+a+'|'+S.genSeed)))*.16;
-      const q=clamp(clamp(0.45*qO+0.2*qR+0.2*qV+0.15*(hon/0.25),0,1)+form,0,1);
+      /* 전부 생성의 경력 시뮬레이션에서 정한 시즌 폼(pf: -1~1)이 있으면 그 시즌 스탯에 크게 반영 (좋은 시즌 → 이적 · 유망주 · 스타 판정과 일치) */
+      const pf=(!isNat&&typeof s.pf==='number')?s.pf:null;
+      let q=clamp(clamp(0.45*qO+0.2*qR+0.2*qV+0.15*(hon/0.25),0,1)+(pf!=null?.34*pf+form*.35:form),0,1);
+      if(!isNat&&s.ps==='S')q=Math.max(q,clamp(.6+.12*(pf||0),0,1));   /* 스타 선수: 높은 스탯이 오래 유지 */
       return{s:s,a:a,sp:posOfS(d,s),q:q,ovrE:ovrE,rng:mulberry(hstr(d.name+'|'+c.club+'|'+a+'|'+(overwrite?'o':'f')+'|'+S.genSeed)),nat:isNat,c:c,
         fit:isNat?0:fitOf(ovrE,c.club,c.league),dbt:(!isNat&&debutAge<=18)?a-debutAge:null,ni:isNat?a-natDebut:null};
     });
@@ -1284,6 +1288,33 @@ function perfOf(d,s,ctx,nb){
 }
 /* 성과가 그 시즌 OVR에서 기대되는 수준보다 얼마나 좋았는가 (+이면 기대 이상) */
 function perfResid(p,o){const base=expScore(o),pf=p.stat==null?base:p.stat;return clamp(pf+.22*p.aw+.12*p.tm-base,-.6,.6)}
+/* ---------- 유망주 · 스타 선수 판정 ---------- */
+/* 시즌 상태: 'P' = 유망주, 'S' = 스타 선수. 전부 생성의 경력 시뮬레이션 값(ps)이 우선, 없으면 실제 스탯으로 판정한 값(_ps2) */
+const stOf=s=>(s&&(s.ps||s._ps2))||'';
+/* 리그 · 클럽 수준 점수 (클수록 강함): 1부 리그 상위권 클럽 = 14 */
+const fgLvl=(club,league)=>(5-clamp(FG_TIER[league]||3,1,4))*3+({top:2,mid:1,low:0}[clubRank(club,league)]);
+/* 직접 고른 클럽 경력: 만들어진 스탯을 보고 유망주 · 스타 선수를 판정 (OVR · 몸값 상승 속도에만 반영) */
+function fgStatusPost(d){
+  const seq=clubSeq(d);seq.forEach(s=>{delete s._ps2});
+  if(!seq.length||seq.some(s=>typeof s.pf==='number'))return;
+  const ctx=seasonCtx(d),nb=natByAge(d),rr=mulberry(hstr(d.name+'|pst|'+GSEED()));
+  let P=false,S=false,bad=0,prove=0,prevC=null,prevLv=0;const good=[];
+  /* 선수 본인의 평균 대비로 판정 (생성 기준과 기대치의 편차 제거) */
+  const R0=seq.map(s=>{const g=num(s.g);return g>=8?perfResid(perfOf(d,s,ctx,nb),num(s.ovr)||num(s._o)):null}),ok=R0.filter(x=>x!=null),mR=ok.length?fgMean(ok):0;
+  seq.forEach((s,i)=>{
+    const o=num(s.ovr)||num(s._o),a=+s.a,g=num(s.g),ci=ctx.get(s),c=ci&&ci.c;
+    const r=R0[i]==null?-1:R0[i]-.8*mR,gd=r>=.1,gr=r>=.32&&o>=78;
+    const lv=c?fgLvl(c.club,c.league):0;
+    if(S&&prevC&&c!==prevC&&lv>prevLv)prove=2;     /* 스타 선수가 더 큰 리그 · 클럽으로 이적 → 다시 증명해야 함 */
+    good.push(gd);
+    if(!P&&a<=20&&o<=76&&gd)P=true;
+    if(P){bad=gd?0:bad+1;if(bad>=2||a>23)P=false}
+    if(S&&prove>0){if(r>=.12)prove=0;else if(--prove===0)S=false}
+    const gc=good.slice(-4).filter(Boolean).length;
+    if(!S&&((o>=85&&gc>=2&&rr()<(lv>=14?.38:lv>=12?.25:.12)*(gc>=3?1.35:1))||(gr&&g>=15&&rr()<.3)))S=true;
+    s._ps2=S?'S':P?'P':'';prevC=c;prevLv=lv;
+  });
+}
 /* ---------- 최대 OVR 기반 시즌별 OVR 곡선 ---------- */
 /* 이 값 아래로 내려가는 것은 매우 드문 경우 (최소 OVR보다 위, 최대 OVR이 낮으면 최대−5) */
 const softFloor=(M,lo)=>Math.max(lo||0,Math.min(75,M-5));
@@ -1294,7 +1325,7 @@ function ovTraj(d,seq,userO,M,lo){
   const n=seq.length,ages=seq.map(s=>num(s.a)),rnd=mulberry(hstr(d.name+'|ovt|'+GSEED())),ctx=seasonCtx(d);
   const topCap=Math.max(M-1,lo);
   /* 클럽 수준에 따른 성장 속도: 상위권 클럽에서 벤치(출전 적음)면 느리게, 하위권 클럽에서 주전이면 빠르게 */
-  const rkm=(i,oe)=>{const ci=ctx.get(seq[i]);if(!ci||!ci.c||ci.c.kind==='nat')return 1;const ft=fitOf(oe,ci.c.club,ci.c.league);return ft<0?1+.35*ft:1+.25*ft};
+  const rkm=(i,oe)=>{const ci=ctx.get(seq[i]),pm_=i>0&&stOf(seq[i-1])==='P'?1.3:1;if(!ci||!ci.c||ci.c.kind==='nat')return pm_;const ft=fitOf(oe,ci.c.club,ci.c.league);return (ft<0?1+.35*ft:1+.25*ft)*pm_};
   const anch=[];seq.forEach((s,i)=>{if(userO.has(s))anch.push({i:i,o:num(s.ovr)})});
   if(!anch.length||anch[0].i!==0)return{err:'첫 시즌의 OVR이 필요합니다.'};
   let warn='';
@@ -1392,9 +1423,11 @@ function valPass(d,seq,userV,final){
       f+=.4*clamp(perfResid(P[i],o),-.25,.3);
       tv*=Math.exp(f);
     }
+    /* 유망주는 몸값이 일반 선수보다 빨리 오르고, 스타 선수는 프리미엄이 붙는다 */
+    const st_=stOf(s);if(st_==='P')tv*=Math.exp(.25);else if(st_==='S')tv*=Math.exp(.15);
     tv*=(1+prem[i])*footMul(d,o);
-    if(a>=29)tv=Math.min(tv,valBase(o,26,pm)*(1+prem[i])*footMul(d,o));
-    const v=clamp(clamp(tv,pv*.55,pv*2.3),VMIN,VMAX);
+    if(a>=29)tv=Math.min(tv,valBase(o,26,pm)*(1+prem[i])*footMul(d,o)*(st_==='S'?1.1:1));
+    const v=clamp(clamp(tv,pv*.55,pv*(st_==='P'?2.8:2.3)),VMIN,VMAX);
     s.val=fmtVal(v);markAuto(s,'val');pv=num(s.val)||v;
   }
   /* 사용자 지정 몸값 범위: 자동 값 전체를 비율로 줄여 최대 몸값 안에 넣고, 최소 몸값 아래는 끌어올린다 */
@@ -1434,11 +1467,15 @@ function ovrFinal(d,seq,fixed,M,lo){
     else if(rp>=-.06)step=a<=31?Math.max(dB,1):dB;                     /* 비슷하거나 조금 좋음 → 소폭 상승 */
     else if(rp>=-.16)step=a<=21?Math.min(dB,1):(a<=33?0:dB);           /* 조금 나쁨 → 유지 */
     else step=a<=21?Math.min(dB,0):Math.min(dB,-1)-(rp<-.30?1:0);      /* 많이 나쁨 → 하락 */
+    /* 유망주: 일반 선수보다 OVR이 빨리 오름 · 스타 선수: 부진하지 않으면 잘 떨어지지 않음 */
+    const stp=stOf(seq[i-1]);
+    if(stp==='P'&&rp>=-.06)step+=1;
+    if(stp==='S'&&step<0&&a<=32&&rp>=-.16)step=0;
     let v=clamp(prev+step,prev-4,prev+G(a)),lw=Math.max(lo,40),hi=topCap;
     let nx=-1;for(let j=i+1;j<n;j++)if(fx[j]){nx=j;break}
     /* 기본 곡선(나이·최대 OVR 시즌)에서 벗어날 수 있는 폭: 고정 시즌에 가까울수록 좁게 */
     const dist=nx>=0?nx-i:9;
-    lw=Math.max(lw,base[i]-Math.min(3,dist));hi=Math.min(hi,base[i]+2);
+    lw=Math.max(lw,base[i]-Math.min(3,dist));hi=Math.min(hi,base[i]+(stp==='P'?4:stp==='S'?3:2));
     if(nx>=0){const gap=ages[nx]-a;lw=Math.max(lw,out[nx]-G(a)*gap);hi=Math.min(hi,out[nx]+Dn*gap)}
     if(lw>hi)lw=hi;
     let nv=clamp(Math.round(v),lw,hi);
@@ -1514,6 +1551,7 @@ function autoAll0(d,mode,scope){
   carryAll(d.careers);
   const g=autoGen(d,all,'club');if(g.err)return fail(g.err);
   carryAll(d.careers);
+  fgStatusPost(d);
   ovvalPass(d,userO,userV,'ovr',M,lo);
   carryAll(d.careers);
   ovvalPass(d,userO,userV,'final',M,lo);
@@ -1721,7 +1759,7 @@ function fgHonors(d,rnd){
   rows.forEach(({c,s})=>{
     const a=+s.a,g=num(s.g),z=fgZ(d,s,ctx,nb),o=num(s.ovr)||num(s._o);zAge[a]=z;oAge[a]=o;
     const cur={lg:false,cup:false,cl:false,el:false};
-    if(!(g>0)||s.tr.length||s.aw.length){prev.lg=cur.lg;return}
+    if(!(g>0)||s.tr.some(t=>TR_REC.indexOf(t)<0)||s.aw.length){prev.lg=cur.lg;return}
     const co=(idx.lg2co||{})[c.league];if(!co||co.n==='기타'||s._tier===2)return;
     const rk=clubRank(c.club,c.league),t=clamp(FG_TIER[c.league]||3,1,4),inv=g>=15?1:.6,pm=(.45+1.1*z)*inv;
     const G=trGroups(c,cont,s),flat=new Set([].concat.apply([],G.map(x=>x[1])));
@@ -1814,6 +1852,145 @@ function fgHonors(d,rnd){
   return n;
 }
 
+/* ---------- 경력 시뮬레이션: 시즌(나이)마다 폼을 정하고, 그 시즌 스탯에 따라 이적 · 임대 · 유망주 · 스타 선수를 정한다 ---------- */
+/* 2부 리그 목록 (임대 행선지) */
+function fgLeagues2(L){
+  const out=[];((S.cfg||{}).countries||[]).forEach(co=>{if(co.n==='기타')return;const l=co.leagues[1];if(!l)return;const cl=(l.c||[]).concat(l.x||[]);if(!cl.length)return;
+    const top=L.find(x=>x.co===co.n);out.push({co:co.n,n:l.n,clubs:cl,t:clamp(FG_TIER[l.n]||((top?top.t:3)+1),1,4),reg:co.reg,second:true})});
+  return out;
+}
+const fgMean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
+/* 리그 안에서 클럽 수준(top/mid/low) 가중치로 클럽 하나 고르기 */
+function fgClubIn(rnd,lg,wf,used,excl){
+  const rk=wpick(rnd,['top','mid','low'],wf);
+  let c=lg.clubs.filter(x=>!used.has(x)&&x!==excl&&clubRank(x,lg.n)===rk);
+  if(!c.length){const alt=['top','mid','low'].filter(r=>r!==rk&&wf(r)>0.02);for(const r of alt){c=lg.clubs.filter(x=>!used.has(x)&&x!==excl&&clubRank(x,lg.n)===r);if(c.length)break}}
+  if(!c.length)return null;
+  const club=c[Math.floor(rnd()*c.length)];return{lg:lg,club:club,rk:clubRank(club,lg.n)};
+}
+/* 반환: 시즌별 [{a, lg, club, rk, loan, f(폼), ps(상태)}] */
+function fgSim(rnd,L,home,a0,end,start,peak){
+  const tl=[],used=new Set();
+  let pB=0;
+  const eoAt=a=>Math.min(peak,fgExpO(a,a0,start,peak)+pB);
+  let cur=fgPickClub(rnd,L,home,eoAt(a0),used,true);if(!cur)return tl;used.add(cur.club);
+  let par=null,loanLeft=0,loanF=[],atClub=0,clubF=[],plan=1+Math.floor(Math.pow(rnd(),.9)*6),f=0;
+  let P=false,Sx=false,pBad=0,prove=0,nLoan=0;
+  const L2=fgLeagues2(L);
+  /* 더 강한 리그 · 클럽으로 이적 (스탯이 좋은 시즌이 이어질수록 확률이 높음) */
+  const moveUp=(a,eo,avgR,veryHigh)=>{
+    const t=cur.lg.t,lvNow=fgLvl(cur.club,cur.lg.n);
+    let pk=null;
+    if(P&&a<=21){
+      /* 유망주: 같은 리그 상위권(지금 클럽이 하위권일 때) 또는 다른 빅리그의 하위 · 중위권(상위권은 비교적 낮은 확률) */
+      const big=L.filter(l=>l.t<=Math.max(1,t-1)&&l.co!==cur.lg.co);
+      if(cur.rk==='low'&&(rnd()<.5||!big.length))pk=fgClubIn(rnd,cur.lg,r=>r==='top'?.65:r==='mid'?.35:0,used,cur.club);
+      if(!pk&&big.length){const lg=wpick(rnd,big,l=>(l.t===1?2:1)*(l.reg===cur.lg.reg?1.6:1));pk=fgClubIn(rnd,lg,r=>r==='top'?(veryHigh?.35:.2):r==='mid'?.4:.4,used)}
+    }else{
+      /* 스탯 · OVR을 함께 보고 행선지 결정. 종합적으로 매우 높으면 빅리그 상위권 클럽 */
+      const eoX=eo+6*avgR;
+      const cands=L.filter(l=>l.t<t||(l.t===t&&l.t===1));
+      if(cands.length){
+        const lg=wpick(rnd,cands,l=>Math.exp(-.5*Math.pow((eoX-FG_REF.mid[l.t-1])/7,2))*(l.reg===cur.lg.reg?1.8:1)*(l===cur.lg?1.5:1)+.02);
+        const wf=veryHigh?(r=>r==='top'?.65:r==='mid'?.28:.07):(r=>Math.exp(-.5*Math.pow((eoX-FG_REF[r][lg.t-1])/6,2))+.06);
+        pk=fgClubIn(rnd,lg,r=>{const lvT=fgLvl('',lg.n)-1+({top:2,mid:1,low:0}[r]);return lvT>lvNow?wf(r):0},used,cur.club);
+      }
+    }
+    if(!pk)return false;
+    if(Sx)prove=2;                       /* 스타 선수: 새 리그 · 클럽에서 다시 증명해야 함 */
+    cur=pk;used.add(pk.club);atClub=0;clubF=[];plan=Sx||veryHigh?3+Math.floor(rnd()*4):2+Math.floor(rnd()*4);return true;
+  };
+  /* 임대: 다른 하위 리그(같은 나라 2부 포함) 또는 같은 리그 하위권 클럽으로 1~2년 */
+  const startLoan=(a)=>{
+    const opts=[];
+    const lowSame=cur.lg.clubs.filter(x=>x!==cur.club&&!used.has(x)&&clubRank(x,cur.lg.n)==='low');
+    if(lowSame.length&&cur.rk!=='low')opts.push(['same',1]);
+    const weaker=L.concat(L2).filter(l=>l.t>cur.lg.t||(l.second&&l.co===cur.lg.co));
+    if(weaker.length)opts.push(['down',1.2]);
+    if(!opts.length)return false;
+    let pk=null;
+    if(wpick(rnd,opts,o=>o[1])[0]==='same')pk={lg:cur.lg,club:lowSame[Math.floor(rnd()*lowSame.length)],rk:'low'};
+    else{const lg=wpick(rnd,weaker,l=>l.co===cur.lg.co?3:l.reg===cur.lg.reg?1:.05);pk=fgClubIn(rnd,lg,r=>r==='low'?.25:r==='mid'?.45:.3,used,cur.club)}
+    if(!pk)return false;
+    nLoan++;par={c:cur,atClub:atClub};cur=pk;loanLeft=Math.max(1,Math.min(rnd()<.55?1:2,end-a));loanF=[];return true;
+  };
+  for(let a=a0;a<=end;a++){
+    const eo=eoAt(a),fit=fitOf(eo,cur.club,cur.lg.n);
+    /* 시즌 폼: 직전 시즌과 이어지는 경향 + 출전 여건(클럽 적합도) + 유망주 · 스타 보정 */
+    let nf=clamp(.42*f+.14*fit+(P?.1:0)+(Sx?.28:0)+gauss(rnd)*.33,-1,1);
+    if(Sx&&rnd()<.75)nf=Math.max(nf,clamp(.42+gauss(rnd)*.1,0,1));
+    f=nf;
+    const good=f>=.3,great=f>=.6,insane=f>=.9;
+    const loan=!!par;
+    tl.push({a:a,lg:cur.lg,club:cur.club,rk:cur.rk,loan:loan,f:Math.round(f*100)/100,ps:''});
+    const rec=tl.slice(-3).map(x=>x.f),avgR=fgMean(rec);
+    let streak=0;for(let k=tl.length-1;k>=0&&tl[k].f>=.3;k--)streak++;
+    /* 유망주 판정: 20세 이하 · OVR(몸값) 낮은데 스탯 좋은 시즌 → 유망주. 좋은 시즌이 이어지지 않으면 해제 */
+    if(!P&&a<=20&&eo<=76&&good&&rnd()<(great?.85:.45))P=true;
+    else if(P){pBad=good?0:pBad+1;if(pBad>=2||a>23){P=false;pBad=0}}
+    if(P)pB=Math.min(5,pB+.8);
+    /* 스타 선수: OVR 85 이상 + 좋은 시즌이 많을수록 (빅리그 · 빅클럽이 가장 높음), 말도 안 되는 시즌이면 어디서든 가능 */
+    const lv=fgLvl(cur.club,cur.lg.n),gc=tl.slice(-4).filter(x=>x.f>=.3).length;
+    if(Sx&&prove>0){if(f>=.42)prove=0;else if(--prove===0)Sx=false}
+    if(!Sx&&!loan){
+      let p=0;
+      if(eo>=85&&gc>=2)p=(lv>=14?.38:cur.lg.t===1?.25:cur.rk==='top'?.16:.1)*(gc>=3?1.35:1);
+      if(insane&&eo>=74&&a>=19)p=Math.max(p,lv>=12?.45:.3);
+      if(rnd()<p)Sx=true;
+    }
+    tl[tl.length-1].ps=Sx?'S':P?'P':'';
+    if(a>=end)break;
+    /* ---- 다음 시즌 소속 ---- */
+    if(par){
+      loanF.push(f);if(--loanLeft>0)continue;
+      const lf=fgMean(loanF);
+      if(rnd()<(lf>=.4?.55:lf>=.25?.4:lf>=.1?.12:0)){par=null;used.add(cur.club);atClub=0;clubF=[];plan=2+Math.floor(rnd()*4);continue}   /* 임대 클럽으로 완전 이적 */
+      const back=par.c;par=null;
+      if(lf<.25&&a<=23&&nLoan<3&&rnd()<.25){cur=back;if(startLoan(a+1))continue}   /* 복귀 후 곧바로 다시 임대 */
+      cur=back;atClub=0;clubF=[];plan=Math.max(plan,1+Math.floor(rnd()*3));continue;   /* 원 소속 클럽 복귀 */
+    }
+    atClub++;clubF.push(f);
+    /* 1~2시즌 뛰었는데 스탯이 좋아지지 않음 → 임대 */
+    if(a<=24&&nLoan<3&&atClub<=2&&fgMean(clubF)<.05&&fit<.25&&rnd()<((atClub===1?.16:.32)+(a<=21?.06:0))*(nLoan?.6:1)){if(startLoan(a))continue}
+    /* 스탯이 좋은 시즌 → 더 강한 리그 · 클럽 (지속될수록 확률이 매우 높아짐) */
+    const canUp=cur.lg.t>1||cur.rk!=='top';
+    if(canUp&&a<=31){
+      let p=streak>=1?[0,.22,.5,.8][Math.min(streak,3)]:0;
+      p*=clamp(.35+.65*avgR+.3*clamp((eo-FG_REF.low[cur.lg.t-1])/10,0,1),.2,1.2);
+      if(P&&good)p=Math.max(p,streak>=2?.8:.45);
+      if(Sx)p=Math.max(p,.7);
+      const veryHigh=avgR>=.55&&eo>=FG_REF.mid[0]-3;
+      if(rnd()<p&&moveUp(a,eo,avgR,veryHigh))continue;
+    }
+    /* 계약 만료: 기존 방식으로 이적 (스탯이 좋으면 더 강한 리그로 갈 확률이 높아짐) */
+    if(atClub>=plan&&!(Sx&&lv>=13&&rnd()<.75)){
+      /* 지금 리그 수준을 기준으로 OVR · 최근 스탯에 맞는 리그 (나이가 들어 실력이 떨어지면 더 약한 리그 · 자국 리그로) */
+      const eoN=eoAt(a+1)+5*avgR;
+      const lg=wpick(rnd,L,l=>Math.exp(-.5*Math.pow((eoN-FG_REF.mid[l.t-1])/6,2))*(l===cur.lg?3:l.co===(home||{}).co?1.6:l.reg===cur.lg.reg?1.2:.5)+.005);
+      const pk=fgClubIn(rnd,lg,r=>Math.exp(-.5*Math.pow((eoN-FG_REF[r][lg.t-1])/6,2))+(r==='top'?.02:.08),used,cur.club);
+      if(pk){cur=pk;used.add(pk.club);atClub=0;clubF=[];plan=1+Math.floor(Math.pow(rnd(),.9)*6)}
+    }
+  }
+  return tl;
+}
+/* 시뮬레이션 결과 → 클럽 경력 행 (같은 클럽의 여러 구간은 한 행의 여러 기간, 임대 시즌은 '임대' 표시) */
+function fgSimRows(d,rnd,tl){
+  const rows=[],byKey={};
+  tl.forEach((x,i)=>{
+    const k=x.club+'|'+x.lg.n;let r=byKey[k];
+    if(!r){r=blankCareer(x.club,x.lg.n);r.fa=true;r.stints=[];byKey[k]=r;rows.push(r)}
+    const lst=r.stints[r.stints.length-1];
+    if(lst&&+lst.s+(+lst.y)===x.a)lst.y=String(+lst.y+1);else r.stints.push({s:String(x.a),y:'1',_new:true});
+  });
+  const sh=FG_SHIRT[d.pos]||[7,8,9,10,11];
+  rows.forEach(r=>{
+    const st=r.stints.map(t=>({s:t.s,y:t.y}));r.stints=st;r.ages=stintsToAges(st,true);r._ps=JSON.parse(JSON.stringify(st));syncSeasons(r,true);
+    st.forEach(t=>{const se=r.seasons.find(z=>+z.a===+t.s);if(se){se.shirt=String(rnd()<.8?sh[Math.floor(rnd()*sh.length)]:2+Math.floor(rnd()*38));markAuto(se,'shirt')}});
+    r.seasons.forEach(se=>{const x=tl.find(y=>y.a===+se.a);if(!x)return;se.pf=x.f;if(x.ps)se.ps=x.ps;if(x.loan&&se.tr.indexOf('임대')<0)se.tr.push('임대')});
+  });
+  return rows;
+}
+
 /* ---------- 전부 자동 생성 ---------- */
 /* 직접 입력한 선수 정보 · 직접 고른 클럽 · 직접 입력한 시즌 값은 그대로 두고, 비어 있거나 자동으로 채운 칸만 새로 만든다 */
 function fullGen(d){
@@ -1842,18 +2019,7 @@ function fullGen(d){
   const end=clamp(Math.round(34+(gk?2:0)+gauss(rnd)*2.3),Math.max(a0+8,30),AGE_MAX);
   const L=fgLeagues(),home=fgHome(L,d.nation);
   if(!d.careers.some(c=>c.kind!=='nat')){
-    const used=new Set(),rows=[];
-    let a=a0;
-    while(a<=end&&L.length){
-      let len=Math.min(end-a+1,1+Math.floor(Math.pow(rnd(),.9)*6));
-      if(end-a+1-len===1)len++;
-      const eo=fgExpO(a+len/2,a0,start,peak),pk=fgPickClub(rnd,L,home,eo,used,!rows.length);
-      if(!pk){a+=len;continue}
-      used.add(pk.club);
-      const row=blankCareer(pk.club,pk.lg.n);row.fa=true;row.stints=[{s:String(a),y:String(len)}];row.ages=stintsToAges(row.stints,true);row._ps=JSON.parse(JSON.stringify(row.stints));syncSeasons(row,true);
-      const sh=FG_SHIRT[d.pos]||[7,8,9,10,11];row.seasons[0].shirt=String(rnd()<.8?sh[Math.floor(rnd()*sh.length)]:2+Math.floor(rnd()*38));markAuto(row.seasons[0],'shirt');
-      rows.push(row);a+=len;
-    }
+    const rows=fgSimRows(d,rnd,fgSim(rnd,L,home,a0,end,start,peak));
     const ni=d.careers.findIndex(c=>c.kind==='nat');
     if(ni>=0)d.careers.splice(ni,0,...rows);else d.careers=d.careers.concat(rows);
   }else{
@@ -2588,7 +2754,7 @@ function draftFrom(p){
   const d={id:p.id,ord:p.ord,awx:Object.assign({},p.awx||{}),ovr0:sv(p.ovr0),ovrMin:sv(p.ovrMin),subpos:(p.subpos||[]).slice(),valMin:sv(p.valMin),valMax:sv(p.valMax),tot:{g:sv((p.tot||{}).g),gl:sv((p.tot||{}).gl),as:sv((p.tot||{}).as),cs:sv((p.tot||{}).cs),ga:sv((p.tot||{}).ga)},name:p.name||'',nation:p.nation||'',pos:p.pos||'ST',value0:num(p.value0!==undefined?p.value0:p.value),height:sv(p.height),weight:sv(p.weight),foot:p.foot||'',memo:p.memo||'',
     careers:(p.careers||[]).map(c=>({club:c.club,kind:c.kind||'club',league:c.league||'기타',ages:c.ages||'',fx:!!c.fx,
       stints:(function(){const r=runs(c.ages||'');return r.length?r:[{s:'',y:''}]})(),reg:c.reg||'',
-      seasons:(c.seasons||[]).map(s=>{const o=blankSeason(s.a);STATK.forEach(k=>{o[k]=sv(s[k])});o.aw=(s.aw||[]).slice();o.tr=(s.tr||[]).slice();if(s.cap!==undefined)o.cap=s.cap;if(s.vice!==undefined)o.vice=s.vice;if(s.intl!==undefined)o.intl=s.intl;o.au=(s.au||[]).filter(k=>k!=='intl');if(s.pos)o.pos=s.pos;if(s.nt)o.nt=s.nt;if(s.shirt!==undefined&&o.shirt==='')o.shirt='';else if(c.kind==='nat'&&(s.tr||[]).some(t=>TR_YOUTH.indexOf(t)>=0))o.nt='U23';if(s.fx)o.fx=true;if(s.ta&&s.ta.length)o.ta=s.ta.slice();return o}),
+      seasons:(c.seasons||[]).map(s=>{const o=blankSeason(s.a);STATK.forEach(k=>{o[k]=sv(s[k])});o.aw=(s.aw||[]).slice();o.tr=(s.tr||[]).slice();if(s.cap!==undefined)o.cap=s.cap;if(s.vice!==undefined)o.vice=s.vice;if(s.intl!==undefined)o.intl=s.intl;o.au=(s.au||[]).filter(k=>k!=='intl');if(s.pos)o.pos=s.pos;if(s.nt)o.nt=s.nt;if(s.shirt!==undefined&&o.shirt==='')o.shirt='';else if(c.kind==='nat'&&(s.tr||[]).some(t=>TR_YOUTH.indexOf(t)>=0))o.nt='U23';if(s.fx)o.fx=true;if(s.ta&&s.ta.length)o.ta=s.ta.slice();if(typeof s.pf==='number')o.pf=s.pf;if(s.ps)o.ps=s.ps;return o}),
       agg:Object.assign(blankAgg(),{g:sv((c.agg||{}).g),gl:sv((c.agg||{}).gl),as:sv((c.agg||{}).as),cs:sv((c.agg||{}).cs),ga:sv((c.agg||{}).ga),rt:sv((c.agg||{}).rt),shirt:String((c.agg||{}).shirt||'')},((c.agg||{}).z||[]).reduce((o,k)=>{o[k]='0';return o},{})),
       aau:((c.agg||{}).au||[]).slice(),fa:!!c.fa,ex:(c.ex||[]).slice(),notes:c.notes||'',lt:(c.lt||[]).map(t=>({n:t.n,c:t.c}))}))};
   d.iau=(p.iau||[]).slice();
@@ -2687,7 +2853,7 @@ function buildDoc(){
       STATK.forEach(k=>{if(has(s[k]))o[k]=k==='shirt'?String(s[k]).trim():num(s[k])});
       if(s.pos&&PPOS[s.pos])o.pos=s.pos;
       if(s.au&&s.au.length){const au=s.au.filter(k=>has(o[k]));if(au.length)o.au=au}
-      if(nt&&s.nt&&s.nt!=='A')o.nt=s.nt;if(s.fx)o.fx=true;
+      if(nt&&s.nt&&s.nt!=='A')o.nt=s.nt;if(s.fx)o.fx=true;if(typeof s.pf==='number'&&isFinite(s.pf))o.pf=s.pf;if(s.ps)o.ps=s.ps;
       if(s.ta&&s.ta.length){const ta=s.ta.filter(x=>{const i=x.indexOf(':'),k=x.slice(0,i),v=x.slice(i+1);return(k==='tr'?s.tr:s.aw).indexOf(v)>=0});if(ta.length)o.ta=ta}
       return o});
     const row={club:nt?nn:String(c.club).trim(),kind:c.kind,league:nt?nn:c.league,ages:String(c.ages).trim(),seasons:seasons,
@@ -3152,6 +3318,9 @@ const INFO={
   '포지션: 대표·서브 포지션이 연관 있게 75% · 연관 없게 10% · 대표 포지션만 15% (골키퍼는 GK만). 주발을 고려해 정하며(왼발 → 왼쪽 포지션이 더 자주, 반대발 윙어도 가능), 서브 포지션은 클럽 시즌에서 최소 1번씩 나오고 대표 포지션이 대부분을 차지합니다. 키·몸무게는 포지션별 실제 선수 분포에 맞춥니다.',
   '시작 OVR(첫 시즌 = 최소 OVR): 50~59 1% · 60~65 30% · 66~70 39% · 71~75 20% · 76~80 9.889% · 81~89 0.1% · 90~95 0.01% · 96~99 0.001%. OVR은 99를 넘지 않고 시작 OVR보다 내려가지 않습니다(시작 OVR이 80 이상이면 나이가 많고 부진할 때 75까지). 양발 선수는 같은 조건의 선수보다 몸값이 10~20% 높습니다.',
   '<b>클럽</b>: 국적을 기준으로 리그가 정해지고(자국에 리그가 없으면 가장 가까운 나라의 리그, 예: 캐나다 → MLS), 시작 OVR에 따라 그 리그의 상위권 · 중위권 · 하위권 클럽이 정해집니다. 낮은 OVR도 상위권 클럽에 갈 수 있지만 그러면 경기를 많이 못 뛰고 OVR이 천천히 오르고, 하위권 클럽에서는 경기수가 많아 OVR이 비교적 빨리 오릅니다(중위권은 그 중간). 실력이 자국 리그 수준을 넘어서면 더 강한 리그로 이적합니다.',
+  '<b>이적 · 임대 (시즌 스탯 기준)</b>: 정해진 OVR 기준이 아니라 <b>그 시즌의 스탯(상세 스탯 위주, OVR도 함께 고려)</b>이 좋으면 더 강한 리그 · 클럽으로 이적할 확률이 높아지고, 좋은 시즌이 이어질수록 확률이 매우 높아집니다. 스탯이 종합적으로 매우 높으면 빅리그 상위권 클럽으로 갈 수 있습니다. 한 클럽에서 1~2시즌을 뛰어도 스탯이 좋아지지 않으면 하위 리그(같은 나라 2부 포함)나 같은 리그 하위권 클럽으로 1~2년 <b>임대</b>를 갈 수 있고(시즌에 ‘임대’ 표시), 임대에서 잘하면 그 클럽으로 완전 이적하거나 원 소속 클럽으로 복귀합니다. 완전 이적이 안 되면 원 소속 클럽으로 돌아가며, 복귀 후 곧바로 다시 임대를 갈 수도 있습니다.',
+  '<b>유망주</b>: 20세 이하에 OVR · 몸값은 낮은데 스탯이 좋은 시즌이 있으면 유망주로 판정되어, 같은 리그 상위권 클럽(지금 클럽이 하위권일 때)이나 다른 빅리그의 하위 · 중위권 클럽(상위권은 비교적 낮은 확률)으로 이적할 확률이 높아지고 OVR · 몸값이 일반 선수보다 빨리 오릅니다. 좋은 시즌이 오래 이어지지 않으면 유망주 판정이 사라집니다.',
+  '<b>스타 선수</b>: OVR 85 이상이면서 스탯이 좋은 시즌이 많을수록 스타 선수가 될 확률이 높아지고(빅리그 · 빅클럽에서 가장 높음), 리그와 관계없이 말도 안 되는 시즌이 있으면 스타 선수가 될 수 있습니다. 스타 선수는 높은 스탯이 오래 유지되지만, 더 큰 리그 · 클럽으로 이적한 뒤 스타급 스탯을 다시 증명하지 못하면 일반 선수로 돌아갑니다. 직접 고른 클럽의 ‘클럽 자동 생성’에서도 만들어진 스탯으로 유망주 · 스타 선수를 판정해 OVR · 몸값 상승 속도에 반영합니다.',
   '<b>경기수</b>: 16~18세에 처음 뛰는 클럽은 첫 시즌 경기수가 적다가 해마다 늘어납니다(국가대표도 같음). 경기수가 적은 시즌은 득점 · 어시가 조금 줄어듭니다. 클럽 경력 중 전성기 나이의 1시즌(2시즌째 50% · 3시즌째 30%)은 경기수 · 골 · 어시 · 평점이 경력 최고 수준이 됩니다.',
   '<b>트로피 · 개인 수상</b>은 시즌별 OVR · 몸값 · 평점 · 스탯과 클럽 수준에 따라 확률적으로 들어갑니다(직접 입력한 트로피 · 수상이 있는 시즌은 건드리지 않음). 서브 포지션은 클럽 또는 국가대표 시즌 중 최소 1번 나오고 스탯은 그 시즌 포지션 기준으로 만들어집니다. 국가대표는 최대 OVR이 높을수록 발탁될 확률이 높습니다. 스탯은 기존 클럽 · 국가대표 자동 생성 알고리즘을 그대로 사용합니다.',
   '<b>직접 입력한 칸과 직접 고른 클럽은 그대로 두고</b> 비어 있거나 자동으로 채운 칸만 만듭니다. 다시 누르면 매번 새로 만듭니다. 위쪽 바의 <b>되돌리기 · 복구</b>로 이전 결과를 오갈 수 있고, <b>지우기</b>는 전부 자동 생성으로 만든 것만 지웁니다.',
@@ -3180,7 +3349,7 @@ function infoHTML(){
 }
 /* ---------- 왼쪽 메뉴 (드로어) ---------- */
 function drawUpd(){
-  const pi=document.querySelector('.dritem[data-arg=projects]');if(pi){pi.classList.toggle('dis',!!S.guest);pi.textContent=S.guest?'프로젝트 (로그인 필요)':'프로젝트 - '+projName();pi.title=pi.textContent}
+  const pi=document.querySelector('.dritem[data-arg=projects]');if(pi){pi.classList.toggle('dis',!!S.guest);if(S.guest)pi.textContent='프로젝트 (로그인 필요)';else pi.innerHTML='프로젝트 - <span class="drsub">'+esc(projName())+'</span>';pi.title=pi.textContent}
   const ft=$('#drfoot');if(!ft)return;
   const au=window.__auth,logged=!!(au&&au.logged),nm=S.uname||(au&&au.name)||'',em=(au&&au.email)||'';
   const ini=(nm||'?').trim().charAt(0).toUpperCase();
