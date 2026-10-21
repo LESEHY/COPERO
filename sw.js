@@ -1,5 +1,5 @@
 /* COPERO 서비스 워커: 앱 화면(index.html) · 실제 선수 데이터(real-players.json) · 글꼴을 보관합니다. 사용자 데이터(Supabase)는 보관하지 않습니다. */
-const V='copero-v2';
+const V='copero-v3';
 const CORE=['./','index.html','manifest.webmanifest','icon-192.png','icon-512.png'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(c=>c.addAll(CORE).catch(()=>{})).then(()=>self.skipWaiting()))});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
