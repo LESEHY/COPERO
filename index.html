@@ -739,6 +739,8 @@ table.tb.sm{min-width:0}table.tb.lt{min-width:0}
 .psrc{display:flex;gap:6px;margin:10px 0 2px}.psrc .chip{flex:1;border-radius:12px}
 .xiwrap{grid-template-columns:minmax(0,1fr)}@media (min-width:760px){.xiwrap{grid-template-columns:minmax(0,1.05fr) minmax(0,1fr)}}
 .xiright .addc select{min-width:0;max-width:100%}
+
+.sqg{margin-top:8px}.sqh{font-size:12px;font-weight:700;margin:0 0 4px;opacity:.8}
 </style>
 </head><body>
 <div class="wrap">
@@ -875,7 +877,7 @@ const NAT_RAW='잉글랜드:유럽;스코틀랜드:유럽;웨일스:유럽;북�
 +'미국:북중미;캐나다:북중미;멕시코:북중미;코스타리카:북중미;파나마:북중미;자메이카:북중미;온두라스:북중미;엘살바도르:북중미;과테말라:북중미;아이티:북중미;퀴라소:북중미;쿠바:북중미;트리니다드 토바고:북중미;도미니카 공화국:북중미;'
 +'브라질:남미;아르헨티나:남미;우루과이:남미;콜롬비아:남미;칠레:남미;페루:남미;에콰도르:남미;파라과이:남미;볼리비아:남미;베네수엘라:남미;'
 +'모로코:아프리카;세네갈:아프리카;이집트:아프리카;나이지리아:아프리카;가나:아프리카;카메룬:아프리카;코트디부아르:아프리카;알제리:아프리카;튀니지:아프리카;말리:아프리카;남아프리카공화국:아프리카;콩고민주공화국:아프리카;부르키나파소:아프리카;기니:아프리카;카보베르데:아프리카;가봉:아프리카;앙골라:아프리카;탄자니아:아프리카;에티오피아:아프리카;수단:아프리카;케냐:아프리카;짐바브웨:아프리카;잠비아:아프리카;우간다:아프리카;토고:아프리카;베냉:아프리카;'
-+'뉴질랜드:오세아니아;피지:오세아니아;'+'감비아:아프리카;기니비사우:아프리카;시에라리온:아프리카;모잠비크:아프리카;코모로:아프리카;마다가스카르:아프리카;적도 기니:아프리카;리비아:아프리카;니제르:아프리카;모리타니:아프리카;중앙아프리카공화국:아프리카;콩고:아프리카;르완다:아프리카;부룬디:아프리카;라이베리아:아프리카;수리남:남미;몰도바:유럽;몰타:유럽;리히텐슈타인:유럽;페로 제도:유럽;카자흐스탄:아시아;그레나다:북중미;과들루프:북중미;마르티니크:북중미;뉴칼레도니아:오세아니아;프랑스령 기아나:남미;앤티가 바부다:북중미;세인트키츠 네비스:북중미;바베이도스:북중미;가이아나:북중미;세인트루시아:북중미;';
++'뉴질랜드:오세아니아;피지:오세아니아;'+'감비아:아프리카;기니비사우:아프리카;시에라리온:아프리카;모잠비크:아프리카;코모로:아프리카;마다가스카르:아프리카;적도 기니:아프리카;리비아:아프리카;니제르:아프리카;모리타니:아프리카;중앙아프리카공화국:아프리카;콩고:아프리카;르완다:아프리카;부룬디:아프리카;라이베리아:아프리카;수리남:남미;몰도바:유럽;몰타:유럽;리히텐슈타인:유럽;페로 제도:유럽;카자흐스탄:아시아;그레나다:북중미;과들루프:북중미;마르티니크:북중미;뉴칼레도니아:오세아니아;프랑스령 기아나:남미;앤티가 바부다:북중미;세인트키츠 네비스:북중미;바베이도스:북중미;가이아나:북중미;세인트루시아:북중미;푸에르토리코:북중미;차드:아프리카;';
 const NAT=NAT_RAW.split(';').filter(Boolean).map(x=>{const a=x.split(':');return{n:a[0],c:a[1]}});
 const NATBY={};NAT.forEach(n=>NATBY[n.n]=n);
 const CHO=['ㄱ','ㄲ','ㄴ','ㄷ','ㄸ','ㄹ','ㅁ','ㅂ','ㅃ','ㅅ','ㅆ','ㅇ','ㅈ','ㅉ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
@@ -4120,7 +4122,7 @@ function clubHTML(name){
   const years={};rows.forEach(({p,s})=>{const Y=yearOf(p,s.a);if(Y)(years[Y]=years[Y]||new Set()).add(p.id)});const yk=Object.keys(years).map(Number).sort((a,b)=>b-a);
   const sc=(k,l)=>`<button class="chip sm" data-act="clsort" data-arg="${k}" aria-pressed="${srt===k}">${l}</button>`;
   return `<button class="back" data-act="nav" data-arg="teams">← 클럽 · 국가</button>
-  <section class="hero"><div class="av big">${esc(name.charAt(0))}</div><div><h1>${esc(name)}</h1><div class="meta"><span>${esc(P[0].lg||'')}${co&&co.n!=='기타'?' · '+esc(co.n):''}</span><span>선수 ${P.length}명</span><span>트로피 ${tro.reduce((t,x)=>t+x[1],0)}개</span></div></div></section>
+  <section class="hero"><div class="av big">${esc(name.charAt(0))}</div><div><h1>${esc(name)}</h1><div class="meta"><span>${esc(P[0].lg||'')}${co&&co.n!=='기타'?' · '+esc(co.n):''}</span><span>선수 ${P.length}명</span><span>트로피 ${tro.reduce((t,x)=>t+x[1],0)}개</span></div></div></section>${curSquadHTML(name)}
   <div class="sec"><div class="secH"><h3>클럽 레전드</h3><div class="chips" style="padding:0" aria-label="레전드 정렬">${sc('score','레전드 점수')}${sc('g','경기')}${sc('gl','골')}${sc('tr','트로피')}</div></div>
   <div class="lbd">${P.map((o,i)=>{const gk=grp(o.p)==='GK';return `<button class="lrow" data-act="open" data-arg="${esc(o.p.id)}"><span class="rk${i<3?' t3':''}">${i+1}</span><span class="nm"><b>${esc(o.p.name)}</b><small>${esc(o.p.pos)} · ${esc(ageRangeLbl(o.p,o.ages))}${o.cap?' · 주장 '+o.cap+'시즌':''}</small></span><span class="lst"><span><b>${fmt(o.g)}</b>경기</span><span><b>${fmt(gk?o.cs:o.gl)}</b>${gk?'클린':'골'}</span><span class="hm"><b>${fmt(gk?0:o.as)}</b>${gk?'':'어시'}</span><span><b>${o.tr}</b>🏆</span></span></button>`}).join('')}</div>
   <div class="hint">레전드 점수 = 경기 + 골×2 + 어시×1.5 (+ 골키퍼 클린시트) + 트로피×12 + 주장 시즌×8</div></div>
@@ -4943,7 +4945,7 @@ function skipGuest(){try{sessionStorage.removeItem(GKEY)}catch(e){}S.guestMove=0
 const CY=2026;            /* 실제 선수 데이터 기준 시즌 (2026-27) */
 const LEAGUES5=['EPL','라리가','분데스리가','세리에A','리그앙'];
 /* 실제 선수 데이터가 있는 리그 (5대 리그 먼저, 그다음 K리그1 · MLS 등) */
-const LG_ORDER=['EPL','라리가','분데스리가','세리에A','리그앙','K리그1','MLS'];
+const LG_ORDER=['EPL','라리가','분데스리가','세리에A','리그앙','프리메이라리가','쉬페르 리그','벨기에 프로리그','사우디 프로페셔널리그','K리그1','J1리그','MLS'];
 function realLgs(){const c={};(S.realL||[]).forEach(p=>{if(p.lg)c[p.lg]=(c[p.lg]||0)+1});return Object.keys(c).sort((a,b)=>{const ia=LG_ORDER.indexOf(a),ib=LG_ORDER.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b,'ko')})}
 const isRealId=id=>/^R[0-9a-z]{3,}$/.test(String(id||''));
 let RJ=null,RP=null;
@@ -5146,6 +5148,16 @@ function renderRealList(){
 /* 새 실제 선수 등록: 등록 화면을 그대로 쓰고, 저장할 때 실제 선수로 저장 */
 function realNewId(){return 'Ru'+Date.now().toString(36)}
 
+/* 클럽 페이지: 실제 데이터의 현재 선수단 (포지션별) */
+function curSquadHTML(name){
+  if(S.src!=='real'||!S.realByClub)return '';
+  const L=(S.realByClub[name]||[]).slice();if(!L.length)return '';
+  const G=[['GK','골키퍼'],['DF','수비수'],['MF','미드필더'],['FW','공격수']],by={GK:[],DF:[],MF:[],FW:[]};
+  L.forEach(x=>{(by[grp(x)]||by.MF).push(x)});
+  const avg=Math.round(L.reduce((t,x)=>t+realOvr(x),0)/L.length);
+  return `<div class="sec"><div class="secH"><h3>현재 선수단</h3><span class="muted" style="font-size:13px">${L.length}명 · 평균 OVR ${avg}</span></div>${G.filter(g=>by[g[0]].length).map(g=>`<div class="sqg"><div class="sqh">${g[1]} <span class="muted">${by[g[0]].length}</span></div><div class="tags">${by[g[0]].sort((a,b)=>realOvr(b)-realOvr(a)).map(x=>`<button class="tag lnkt" data-act="open" data-arg="${esc(x.id)}"><b class="${ovrCls(realOvr(x))}" style="background:none;padding:0">${realOvr(x)}</b> ${esc(x.name)} <small>${esc(x.pos)} · ${x.age}세</small></button>`).join('')}</div></div>`).join('')}</div>`;
+}
+
 /* =====================================================================
    커리어 모드 엔진 (선수 커리어 · 감독 커리어 공통)
    ===================================================================== */
@@ -5153,7 +5165,8 @@ const R_=Math.random;
 const ri=(a,b)=>a+Math.floor(R_()*(b-a+1));
 const sgm=x=>1/(1+Math.exp(-x));
 /* 봄~가을(단일 연도) 시즌 리그 */
-const CAL_LG=new Set(['K리그1','K리그2','MLS','J1리그','J2리그','브라질레이랑 세리에A','브라질레이랑 세리에B','아르헨티나 프리메라 디비시온','엘리테세리엔','OBOS-리가엔','알스벤스칸','수페레탄','중국 슈퍼리그','우루과이 프리메라 디비시온']);
+/* J리그는 2026-27 시즌부터 가을~봄 시즌으로 바뀜 */
+const CAL_LG=new Set(['K리그1','K리그2','MLS','브라질레이랑 세리에A','브라질레이랑 세리에B','아르헨티나 프리메라 디비시온','엘리테세리엔','OBOS-리가엔','알스벤스칸','수페레탄','중국 슈퍼리그','우루과이 프리메라 디비시온']);
 const isCal=lg=>CAL_LG.has(lg);
 const seasonLbl2=(y,lg)=>isCal(lg)?`${y}`:`${y}-${String((y+1)%100).padStart(2,'0')}`;
 /* 리그 우승 트로피 이름 (MLS: 정규리그 1위 = 서포터즈 실드, 우승은 플레이오프 MLS컵) */
@@ -5895,7 +5908,7 @@ function cnewHTML(){
   const back=`<button class="back" data-act="cnback">← ${C.step==='src'||C.k==='manager'?'커리어 모드':'이전'}</button>`;
   if(C.k==='player'&&C.step==='src')return `${back}<h2 style="padding:4px 0 10px">선수 커리어 시작</h2><div class="cmcards">
     <button class="cmcard" data-act="cnsrc" data-arg="new"><span class="cmic">✨</span><b>새 선수 만들기</b><span>이름 · 국적 · 포지션 · 잠재력을 정하고 16~21세 유망주로 데뷔합니다.</span></button>
-    <button class="cmcard" data-act="cnsrc" data-arg="real"><span class="cmic">🌍</span><b>실제 선수로 시작</b><span>5대 리그 · K리그1 · MLS 실제 선수를 골라 현재 소속 클럽 · 나이 · 능력치로 시작합니다.</span></button>
+    <button class="cmcard" data-act="cnsrc" data-arg="real"><span class="cmic">🌍</span><b>실제 선수로 시작</b><span>12개 리그 실제 선수를 골라 현재 소속 클럽 · 나이 · 능력치로 시작합니다.</span></button>
     <button class="cmcard" data-act="cnsrc" data-arg="custom"><span class="cmic">🧩</span><b>커스텀 선수로 시작</b><span>내가 등록한 선수를 골라 원하는 나이부터 커리어를 다시 씁니다.</span></button></div>`;
   const nats=NAT.map(n=>n.n).sort((a,b)=>a.localeCompare(b,'ko'));
   if(C.k==='manager'){
@@ -5938,9 +5951,14 @@ function cnewHTML(){
 }
 function cnRealList(){
   const C=S.cn,q=C.q.trim().toLowerCase();
-  const arr=(S.realL||[]).filter(p=>(C.rlg==='all'||p.lg===C.rlg)&&(!q||[p.name,p.club,p.nation,p.pos].join(' ').toLowerCase().includes(q))).sort((a,b)=>realOvr(b)-realOvr(a)).slice(0,60);
+  const mq=p=>!q||[p.name,p.club,p.nation,p.pos].join(' ').toLowerCase().includes(q);
+  let arr=(S.realL||[]).filter(p=>(C.rlg==='all'||p.lg===C.rlg)&&mq(p)),wide=false;
+  /* 선택한 리그에 없으면 전체 리그에서 다시 찾기 */
+  if(!arr.length&&q&&C.rlg!=='all'){arr=(S.realL||[]).filter(mq);wide=arr.length>0}
+  arr=arr.sort((a,b)=>realOvr(b)-realOvr(a)).slice(0,60);
   if(!arr.length)return '<div class="empty"><b>조건에 맞는 선수가 없습니다</b></div>';
-  return arr.map(p=>`<button class="pkb${C.pick===p.id?' on':''}" data-act="cnpick" data-arg="${esc(p.id)}"><span class="av">${initial(p)}</span><span class="nm"><b>${esc(p.name)}</b><small>${esc(p.pos)} · ${p.age}세 · ${esc(p.club)}</small></span><span class="ovr ${ovrCls(realOvr(p))}">${fmt(realOvr(p))}</span></button>`).join('')+'<p class="hint">검색 결과는 OVR 순으로 최대 60명까지 보여 줍니다.</p>';
+  const note=wide?'<div class="hint" style="grid-column:1/-1;font-size:12px;opacity:.75;padding:4px 2px">선택한 리그에 없어 전체 리그 결과를 보여줍니다</div>':'';
+  return note+arr.map(p=>`<button class="pkb${C.pick===p.id?' on':''}" data-act="cnpick" data-arg="${esc(p.id)}"><span class="av">${initial(p)}</span><span class="nm"><b>${esc(p.name)}</b><small>${esc(p.pos)} · ${p.age}세 · ${esc(p.club)}</small></span><span class="ovr ${ovrCls(realOvr(p))}">${fmt(realOvr(p))}</span></button>`).join('')+'<p class="hint">검색 결과는 OVR 순으로 최대 60명까지 보여 줍니다.</p>';
 }
 /* 커스텀 선수의 특정 나이 상태 */
 function cstAt(p,a){
